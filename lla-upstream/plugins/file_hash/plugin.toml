@@ -1,0 +1,38 @@
+schema_version = 3
+
+[plugin]
+id = "dev.lla.file-hash"
+name = "file_hash"
+version = "0.6.6"
+api_min = 3
+api_max = 3
+runtime = "native"
+entrypoint = "file_hash"
+description = "Calculate file hashes"
+license = "MIT"
+
+[capabilities]
+decorates_entries = true
+formats = ["default", "long"]
+machine_output = true
+
+[permissions]
+filesystem = ["read:selection"]
+
+[[fields]]
+name = "sha1"
+type = "string"
+filterable = true
+
+[[fields]]
+name = "sha256"
+type = "string"
+filterable = true
+
+[[actions]]
+id = "help"
+description = "Show help information"
+examples = ["lla plugin run file_hash help"]
+interactive = false
+arguments = []
+output = { type = "text" }

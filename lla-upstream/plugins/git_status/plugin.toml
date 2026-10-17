@@ -1,0 +1,52 @@
+schema_version = 3
+
+[plugin]
+id = "dev.lla.git-status"
+name = "git_status"
+version = "0.6.6"
+api_min = 3
+api_max = 3
+runtime = "native"
+entrypoint = "git_status"
+description = "Expose repository and per-entry Git status"
+license = "MIT"
+
+[capabilities]
+decorates_entries = true
+formats = ["default", "long"]
+machine_output = true
+
+[permissions]
+filesystem = ["metadata:tree"]
+process = true
+
+[[fields]]
+name = "git_status"
+type = "string"
+filterable = true
+
+[[fields]]
+name = "git_branch"
+type = "string"
+sortable = true
+filterable = true
+
+[[fields]]
+name = "git_staged"
+type = "integer"
+sortable = true
+filterable = true
+
+[[fields]]
+name = "git_modified"
+type = "integer"
+sortable = true
+filterable = true
+
+[[actions]]
+id = "help"
+description = "Show help information"
+examples = ["lla plugin run git_status help"]
+interactive = true
+arguments = []
+output = { type = "none" }

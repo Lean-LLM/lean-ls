@@ -1,0 +1,338 @@
+.TH LISZT 1 "2026-07-19" "liszt" "User Commands"
+.SH NAME
+liszt, lz \- list directory contents, byte-identical to GNU ls, faster
+.SH SYNOPSIS
+.B liszt
+.RI [ OPTION ]...
+.RI [ FILE ]...
+.br
+.B lz
+.RI [ OPTION ]...
+.RI [ FILE ]...
+.SH DESCRIPTION
+.B liszt
+is a from-scratch C11 reimplementation of GNU
+.BR ls (1)
+(coreutils 9.11). Under a pinned environment (locale, TZ, COLUMNS,
+LS_COLORS, piped stdout) its output is byte-identical to GNU ls on
+every supported flag, and faster on every measured workload.
+.B lz
+is the same binary under a shorter name; it prints
+.B liszt
+as its program name in version output and diagnostics keep the invoked
+name, exactly as GNU ls behaves when renamed.
+.PP
+The complete GNU ls 9.11 option surface is supported: formats
+.RB ( \-l ,
+.BR \-C ,
+.BR \-x ,
+.BR \-m ,
+.BR \-1 ),
+sorting
+.RB ( \-t ,
+.BR \-S ,
+.BR \-v ,
+.BR \-X ,
+.BR \-U ,
+.BR \-\-sort ),
+recursion and dereferencing
+.RB ( \-R ,
+.BR \-H ,
+.BR \-L ),
+color and indicators
+.RB ( \-\-color ,
+.BR \-F ,
+.BR \-p ,
+.BR \-\-file\-type ),
+quoting styles, time words and styles
+.RB ( \-\-time ,
+.BR \-\-time\-style ,
+.BR \-\-full\-time ),
+ignore patterns
+.RB ( \-\-hide ,
+.BR \-I ,
+.BR \-B ),
+and the oddballs
+.RB ( \-\-dired ,
+.BR \-\-hyperlink ,
+.BR \-\-zero ,
+.BR \-Z ,
+.BR \-\-author ).
+See
+.BR ls (1)
+for option semantics; they are identical by construction and pinned by
+a differential test suite against the reference implementation.
+.SH DEVIATIONS
+One intentional divergence is carried, with its own regression
+registry: GNU ls assigns a rejected display width into an unsigned
+type before clamping, so names containing control bytes or invalid
+multibyte sequences in multibyte locales can wrap column layout
+arithmetic. liszt honors the intended clamp (width 0). Quoted styles
+and
+.B \-q
+are unaffected.
+.SH EXTENSIONS
+Beyond the GNU surface, liszt offers extensions - all off by default;
+with none active, output is byte-identical to GNU ls. Extension long
+options match by exact spelling only (no abbreviation).
+.TP
+.BR \-\-icons [=\fIWHEN\fR]
+Prefix each name with a Nerd-Font icon chosen from compiled-in tables
+(exact filename, then directory name, then suffix, then file type).
+.I WHEN
+is
+.BR always ,
+.BR auto ,
+or
+.BR never ;
+bare
+.B \-\-icons
+means
+.B auto
+(icons only when standard output is a terminal). liszt never reads
+directory contents to choose a glyph, and with the builtin tables the
+stat-less listing plan is preserved. Not combinable with
+.B \-\-dired
+(positional last-wins, like
+.BR \-\-hyperlink ).
+.IP
+The glyphs live in the Unicode private-use area, so a
+.B Nerd Font
+must be installed for them to render; without one the terminal draws
+replacement boxes. liszt emits the same bytes either way - this is a
+system font matter, not an output difference. Installing any Nerd Font
+is enough even when the terminal is configured for another family,
+since fontconfig falls back per glyph. To check coverage:
+.IP
+.EX
+fc\-list :charset=e5ff family
+.EE
+.IP
+An empty result means no installed font carries the icon range.
+.TP
+.B \-\-tree
+List directory contents as a tree. Implies recursion; the format is
+one-per-line unless
+.B \-l
+is active (metadata on the left, branch glyphs in the name column).
+The full sort, ignore, and grouping surface applies to each sibling
+list;
+.B \-d
+wins (no tree);
+.B \-\-dired
+self-disables. Symbolic links are shown but not descended unless
+.B \-L
+is given; directory cycles are always detected (exit status 2). One
+directory descriptor is open at any moment, at any depth, so deep or
+huge trees cannot exhaust descriptors. Unreadable subdirectories are
+diagnosed and skipped (exit status 1).
+.TP
+.BI \-\-level= N
+Descend at most
+.I N
+levels (entries directly in each operand are level 1). Directories at
+the boundary are shown, styled, and never entered. 0 or absent means
+unlimited. Requires
+.BR \-\-tree .
+.TP
+.BI \-\-tree\-limit= N
+Show at most
+.I N
+entries per directory, applied after sorting; the rest collapse into a
+final "... \fIK\fP more" line (plain bytes: no color, indicator, or
+icon). Entries hidden by the cap are not descended. 0 or absent means
+uncapped. Requires
+.BR \-\-tree .
+.TP
+.BI \-\-tree\-glyphs= WORD
+Branch glyph charset:
+.BR unicode ,
+.BR ascii ,
+or
+.B auto
+(the default: unicode when the locale codeset is UTF-8). Requires
+.BR \-\-tree .
+.TP
+.B \-\-git
+Show a two-character git status cell before each name in long format
+(silently inert otherwise). Dependency-free: liszt reads the repo's
+index directly (formats v2-v4, SHA-256 repos, linked worktrees) and
+compares worktree stat data; nothing is ever hashed. The first
+character is always
+.B \-
+(staged state needs object hashing); the second is
+.B \-
+clean,
+.B M
+modified,
+.B T
+type change,
+.B N
+untracked,
+.B I
+ignored, or
+.B U
+conflict. Directories with tracked content show
+.B \-\-
+without recursing; submodules are never entered. Split-index and
+sparse-index repos, and anything malformed, degrade to a blank column
+(reasons under
+.BR LISZT_DEBUG_GIT=1 ).
+Known limits: staged-only changes read as clean; GIT_DIR and
+core.excludesFile are not consulted; sizes compare modulo 4 GiB.
+.TP
+.B \-\-git\-ignore
+Hide entries ignored by gitignore rules (nested .gitignore files and
+the repository's info/exclude), in any format. Tracked files are
+never hidden. Does not imply
+.BR \-\-git .
+.TP
+.B \-\-no\-git
+Suppress an earlier
+.B \-\-git
+(positional, last wins).
+.TP
+.B \-\-color=full
+Everything
+.B \-\-color=always
+does, plus metadata coloring with eza's default theme: permission
+bits (read yellow, write red, execute green, bold for the user
+triplet, purple specials, dark-gray dashes), link counts (highlighted
+for multi-linked regular files), your own user and group in bold
+yellow, sizes on a magnitude gradient (green through purple), dates
+blue, inodes purple, blocks cyan. Filenames that LS_COLORS leaves
+plain fall back to eza's filename classes (source, build files,
+documents, media, archives, temporaries). LS_COLORS always wins where
+it matches, and only SGR sequences are added: stripping them yields
+.B \-\-color=always
+output byte for byte. The word matches by exact spelling only; every
+other value keeps GNU's behavior exactly.
+.TP
+.BI \-\-theme= NAME
+Select a built-in color theme (implies
+.BR \-\-color=full ).
+Presets ship in the binary and emit 24-bit color, exact regardless of
+the terminal palette:
+.B default
+(the 16-color theme, riding the terminal palette),
+.BR black ,
+.BR catppuccin\-frappe ,
+.BR catppuccin\-latte ,
+.BR catppuccin\-macchiato ,
+.BR catppuccin\-mocha ,
+.BR dracula ,
+.BR everforest ,
+.BR frosty ,
+.BR gruvbox\-dark ,
+.BR gruvbox\-light ,
+.BR kanagawa\-dragon ,
+.BR kanagawa\-lotus ,
+.BR kanagawa\-wave ,
+.BR monokai ,
+.BR nord ,
+.BR one\-dark ,
+.BR rose\-pine ,
+.BR rose\-pine\-dawn ,
+.BR rose\-pine\-moon ,
+.BR solarized\-dark ,
+.BR tokyonight ,
+.BR white .
+Names match exactly; an unknown name lists the valid ones. The
+.B LISZT_THEME
+environment variable supplies the default (unknown values there
+diagnose and keep the default theme);
+.B LISZT_COLORS
+overrides single keys on top of any theme using the LS_COLORS grammar
+with eza's two-letter vocabulary (ur uw ux ue gr gw gx tr tw tx su sf,
+lc lm, uu gu, nb nk nm ng nt df ds, da in bl xx, ga gm gd gv gt gi gc,
+im vi mu lo cr do co tm cm bu sc, and the filekinds fi di ln pi bd cd
+so ex or). An explicit non-empty
+.B LS_COLORS
+still wins for filenames; LISZT_COLORS outranks both.
+.SH ENVIRONMENT
+The GNU-compatible variables
+.BR LS_COLORS ,
+.BR COLUMNS ,
+.BR TIME_STYLE ,
+.BR TABSIZE ,
+.BR LS_BLOCK_SIZE ,
+.BR BLOCK_SIZE ,
+.BR BLOCKSIZE ,
+.B POSIXLY_CORRECT
+and the locale variables behave as in
+.BR ls (1).
+.PP
+liszt additionally reads:
+.TP
+.B LS_ICONS
+Icon overrides, LS_COLORS-shaped: colon-separated
+.IR key = value
+entries where
+.I key
+is
+.BI * .suffix
+(case-insensitive),
+.IB name /
+(exact directory name),
+a two-letter LS_COLORS file-type label
+.RB ( di ,
+.BR fi ,
+\&...), or an exact filename. Values take the same backslash escapes
+as LS_COLORS; an empty value blanks the icon cell. Unparsable values
+diagnose and fall back to the builtin tables.
+.TP
+.B LISZT_ICONS
+Default WHEN for
+.B \-\-icons
+when the flag is absent.
+.TP
+.BR LISZT_ICON_SPACING " (fallback " EZA_ICON_SPACING )
+Spaces after the glyph, 0-8, default 1.
+.TP
+.B LISZT_ICONS_OSC66
+When 1, wrap each glyph in the kitty text-sizing sequence
+(OSC 66, w=1) so supporting terminals render exactly one cell.
+.TP
+.B LISZT_DEBUG_PLAN
+Print the selected sort engine and stat plan to standard error.
+.TP
+.B LISZT_DEBUG_STATS
+Print engine counters (radix passes, comparator calls, time-memo hit
+rate) to standard error.
+.TP
+.B LISZT_DEBUG_VERIFY
+Cross-check optimized engines against the scalar reference oracle;
+mismatches abort. Used by the test harness on every run.
+.TP
+.B LISZT_FORCE_SCALAR
+Disable optimized sort engines for this run.
+.TP
+.B LISZT_PARALLEL_MIN
+Entry-count threshold for the parallel stat phase (default 400).
+Large values force the serial path.
+.TP
+.B LISZT_PARALLEL_WORKERS
+Cap the worker count of the parallel stat phase.
+.SH EXIT STATUS
+.TP
+0
+Success.
+.TP
+1
+Minor problems (for example: cannot access a subdirectory).
+.TP
+2
+Serious trouble (for example: cannot access a command-line argument).
+.SH EXAMPLES
+.TP
+.B lz \-la
+Long listing of the current directory, dotfiles included.
+.TP
+.B liszt \-\-color=always \-F | less \-R
+Colored, classified listing through a pager.
+.SH SEE ALSO
+.BR ls (1),
+.BR dircolors (1)
+.PP
+Project:
+.I https://github.com/tenseleyFlow/liszt

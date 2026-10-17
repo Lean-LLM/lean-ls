@@ -1,0 +1,60 @@
+schema_version = 3
+
+[plugin]
+id = "dev.lla.google-search"
+name = "google_search"
+version = "0.6.6"
+api_min = 3
+api_max = 3
+runtime = "native"
+entrypoint = "google_search"
+description = "Search Google with suggestions and history"
+license = "MIT"
+
+[capabilities]
+formats = ["default"]
+
+[permissions]
+network = ["google.com", "suggestqueries.google.com"]
+clipboard = true
+open_url = true
+
+[[actions]]
+id = "search"
+description = "Perform a search"
+examples = ["lla plugin run google_search search"]
+interactive = true
+arguments = []
+output = { type = "none" }
+
+[[actions]]
+id = "search-selected"
+description = "Search selected text"
+examples = ["lla plugin run google_search search-selected"]
+interactive = true
+arguments = []
+output = { type = "none" }
+
+[[actions]]
+id = "history"
+description = "Manage search history"
+examples = ["lla plugin run google_search history"]
+interactive = true
+arguments = []
+output = { type = "none" }
+
+[[actions]]
+id = "preferences"
+description = "Configure preferences"
+examples = ["lla plugin run google_search preferences"]
+interactive = true
+arguments = []
+output = { type = "none" }
+
+[[actions]]
+id = "help"
+description = "Show help information"
+examples = ["lla plugin run google_search help"]
+interactive = true
+arguments = []
+output = { type = "none" }

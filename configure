@@ -1,0 +1,206 @@
+#!/bin/sh
+# Hand-written configure for liszt. Writes config.h and config.mk.
+# No autotools. Idempotent. Honors CC.
+
+set -e
+
+LISZT_VERSION="0.3.0"
+
+cc="${CC:-cc}"
+mkdir -p build
+
+# Platform feature macros. _DEFAULT_SOURCE is always in CPPFLAGS (Makefile);
+# Linux additionally needs _GNU_SOURCE for statx/getdents64/syscall under
+# strict C11 (ferret's lesson).
+extra_cppflags=""
+case "$(uname -s)" in
+Linux) extra_cppflags="-D_GNU_SOURCE" ;;
+Darwin) extra_cppflags="-D_DARWIN_C_SOURCE" ;;
+esac
+
+try_compile() {
+    name="$1"
+    code="$2"
+    printf '%s\n' "$code" > "build/probe_$name.c"
+    if "$cc" -std=c11 -D_DEFAULT_SOURCE $extra_cppflags -Wall -Werror \
+        -c -o "build/probe_$name.o" "build/probe_$name.c" 2>/dev/null; then
+        rm -f "build/probe_$name.c" "build/probe_$name.o"
+        return 0
+    fi
+    rm -f "build/probe_$name.c" "build/probe_$name.o"
+    return 1
+}
+
+# Compile AND execute; returns the program's exit status (127 when the
+# compile itself fails). For runtime-behavior probes (wcwidth tables).
+try_run() {
+    name="$1"
+    code="$2"
+    printf '%s\n' "$code" > "build/probe_$name.c"
+    if ! "$cc" -std=c11 -D_DEFAULT_SOURCE $extra_cppflags \
+        -o "build/probe_$name" "build/probe_$name.c" 2>/dev/null; then
+        rm -f "build/probe_$name.c" "build/probe_$name"
+        return 127
+    fi
+    "build/probe_$name"
+    rc=$?
+    rm -f "build/probe_$name.c" "build/probe_$name"
+    return $rc
+}
+
+have_statx=0
+try_compile statx '
+#include <sys/stat.h>
+#include <fcntl.h>
+int probe(void);
+int probe(void) { struct statx sx; return statx(AT_FDCWD, ".", 0, STATX_BASIC_STATS, &sx); }
+' && have_statx=1
+
+have_getdents64=0
+try_compile getdents64 '
+#include <sys/syscall.h>
+#include <unistd.h>
+long probe(void);
+long probe(void) { char buf[64]; return syscall(SYS_getdents64, 0, buf, sizeof buf); }
+' && have_getdents64=1
+
+have_getdirentries=0
+try_compile getdirentries '
+#include <dirent.h>
+#include <sys/types.h>
+long probe(void);
+long probe(void) { char buf[64]; off_t base = 0; return getdirentries(0, buf, sizeof buf, &base); }
+' && have_getdirentries=1
+
+have_d_type=0
+try_compile d_type '
+#include <dirent.h>
+int probe(void);
+int probe(void) { struct dirent d; d.d_type = DT_REG; return d.d_type == DT_REG; }
+' && have_d_type=1
+
+# Linux xattr signature: getxattr(path, name, value, size).
+have_getxattr=0
+try_compile getxattr '
+#include <sys/xattr.h>
+long probe(void);
+long probe(void) { return getxattr(".", "user.x", (void *)0, 0); }
+' && have_getxattr=1
+
+# Darwin xattr signature has options/position parameters.
+have_getxattr_darwin=0
+try_compile getxattr_darwin '
+#include <sys/xattr.h>
+long probe(void);
+long probe(void) { return getxattr(".", "user.x", (void *)0, 0, 0, 0); }
+' && have_getxattr_darwin=1
+
+# FreeBSD extended attributes.
+have_extattr=0
+try_compile extattr '
+#include <sys/types.h>
+#include <sys/extattr.h>
+long probe(void);
+long probe(void) { return extattr_get_file(".", EXTATTR_NAMESPACE_USER, "x", (void *)0, 0); }
+' && have_extattr=1
+
+have_st_mtim=0
+try_compile st_mtim '
+#include <sys/stat.h>
+long probe(void);
+long probe(void) { struct stat st = {0}; return (long)st.st_mtim.tv_nsec; }
+' && have_st_mtim=1
+
+have_st_mtimespec=0
+try_compile st_mtimespec '
+#include <sys/stat.h>
+long probe(void);
+long probe(void) { struct stat st = {0}; return (long)st.st_mtimespec.tv_nsec; }
+' && have_st_mtimespec=1
+
+have_st_birthtim=0
+try_compile st_birthtim '
+#include <sys/stat.h>
+long probe(void);
+long probe(void) { struct stat st = {0}; return (long)st.st_birthtim.tv_nsec; }
+' && have_st_birthtim=1
+
+have_st_birthtimespec=0
+try_compile st_birthtimespec '
+#include <sys/stat.h>
+long probe(void);
+long probe(void) { struct stat st = {0}; return (long)st.st_birthtimespec.tv_nsec; }
+' && have_st_birthtimespec=1
+
+# gnulib m4/wcwidth.m4 conformance probe, verbatim checks: where libc
+# wcwidth fails (macOS), liszt routes UTF-8 width through the ported
+# uniwidth tables exactly as gnulib REPLACE_WCWIDTH does - matching the
+# oracle build's own configure decision on each platform. A box without
+# en_US.UTF-8 passes vacuously (result 0), like the m4 test. Execution
+# failure falls back to the m4 cross-compile guesses.
+replace_wcwidth=0
+if try_run wcwidth_works '
+#include <locale.h>
+#include <wchar.h>
+int main(void) {
+  int result = 0;
+  if (setlocale(LC_ALL, "en_US.UTF-8") != (char *)0) {
+    if (wcwidth(0x0301) > 0) result |= 1;
+    if (wcwidth(0x05B0) > 0) result |= 2;
+    if (wcwidth(0x200B) > 0) result |= 4;
+    if (wcwidth(0xFF1A) == 0) result |= 8;
+    if (wcwidth(0x2202) > 1) result |= 16;
+  }
+  return result;
+}
+'; then
+    rc=0
+else
+    rc=$?
+fi
+if [ "$rc" -eq 127 ]; then
+    case "$(uname -s)" in
+    Linux) replace_wcwidth=0 ;;      # glibc/musl guess yes-works
+    *) replace_wcwidth=1 ;;
+    esac
+elif [ "$rc" -ne 0 ]; then
+    replace_wcwidth=1
+fi
+
+case "$(uname -m)" in
+x86_64|amd64|aarch64|arm64) endian=little ;;
+*) endian=unknown ;;
+esac
+
+cat > config.h <<EOF
+#ifndef LISZT_CONFIG_H
+#define LISZT_CONFIG_H
+#define LISZT_VERSION "$LISZT_VERSION"
+#define LISZT_HAVE_STATX $have_statx
+#define LISZT_HAVE_GETDENTS64 $have_getdents64
+#define LISZT_HAVE_GETDIRENTRIES $have_getdirentries
+#define LISZT_HAVE_D_TYPE $have_d_type
+#define LISZT_HAVE_GETXATTR $have_getxattr
+#define LISZT_HAVE_GETXATTR_DARWIN $have_getxattr_darwin
+#define LISZT_HAVE_EXTATTR $have_extattr
+#define LISZT_HAVE_ST_MTIM $have_st_mtim
+#define LISZT_HAVE_ST_MTIMESPEC $have_st_mtimespec
+#define LISZT_HAVE_ST_BIRTHTIM $have_st_birthtim
+#define LISZT_HAVE_ST_BIRTHTIMESPEC $have_st_birthtimespec
+#define LISZT_REPLACE_WCWIDTH $replace_wcwidth
+#define LISZT_ENDIAN_$endian 1
+#endif
+EOF
+
+cat > config.mk <<EOF
+CC ?= $cc
+EXTRA_CPPFLAGS = $extra_cppflags
+SANITIZE_FLAGS ?= -fsanitize=address,undefined -fno-omit-frame-pointer
+LDLIBS ?=
+EOF
+
+echo "liszt $LISZT_VERSION configured:"
+echo "  cc=$cc"
+echo "  statx=$have_statx getdents64=$have_getdents64 getdirentries=$have_getdirentries d_type=$have_d_type"
+echo "  getxattr=$have_getxattr getxattr_darwin=$have_getxattr_darwin extattr=$have_extattr endian=$endian"
+echo "  st_mtim=$have_st_mtim st_mtimespec=$have_st_mtimespec"

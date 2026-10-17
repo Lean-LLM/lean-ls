@@ -1,0 +1,91 @@
+schema_version = 3
+
+[plugin]
+id = "dev.lla.media-inspector"
+name = "media_inspector"
+version = "0.6.6"
+api_min = 3
+api_max = 3
+runtime = "native"
+entrypoint = "media_inspector"
+description = "Inspect MIME, dimensions, EXIF, duration, codecs, and bitrate"
+license = "MIT"
+
+[capabilities]
+decorates_entries = true
+formats = ["default", "long"]
+machine_output = true
+
+[permissions]
+filesystem = ["read:selection", "read:user-path"]
+process = true
+
+[[fields]]
+name = "mime_type"
+type = "string"
+sortable = true
+filterable = true
+
+[[fields]]
+name = "media_kind"
+type = "string"
+sortable = true
+filterable = true
+
+[[fields]]
+name = "media_width"
+type = "integer"
+sortable = true
+filterable = true
+
+[[fields]]
+name = "media_height"
+type = "integer"
+sortable = true
+filterable = true
+
+[[fields]]
+name = "duration_ms"
+type = "integer"
+sortable = true
+filterable = true
+
+[[fields]]
+name = "codecs"
+type = "string"
+filterable = true
+
+[[fields]]
+name = "bitrate_bps"
+type = "integer"
+sortable = true
+filterable = true
+
+[[fields]]
+name = "exif"
+type = "string"
+filterable = true
+
+[[actions]]
+id = "inspect"
+description = "Print complete media metadata for a file"
+examples = ["lla plugin run media_inspector inspect -- ./photo.jpg"]
+interactive = true
+arguments = [{ name = "path", type = "path", description = "Path to the file or directory.", position = 0, required = true }]
+output = { type = "none" }
+
+[[actions]]
+id = "tools"
+description = "Report optional media metadata tools available on PATH"
+examples = ["lla plugin run media_inspector tools"]
+interactive = true
+arguments = []
+output = { type = "none" }
+
+[[actions]]
+id = "help"
+description = "Show media inspector usage"
+examples = ["lla plugin run media_inspector help"]
+interactive = true
+arguments = []
+output = { type = "none" }

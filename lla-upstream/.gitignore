@@ -1,0 +1,13 @@
+.DS_Store
+target/
+dist/
+sdk/tests/fixtures/*/Cargo.lock
+
+.cache/
+
+completions/*
+!completions/*.bash
+!completions/*.fish
+!completions/_lla
+!completions/*.ps1
+!completions/*.elv

@@ -1,0 +1,51 @@
+schema_version = 3
+
+[plugin]
+id = "dev.lla.duplicate-file-detector"
+name = "duplicate_file_detector"
+version = "0.6.6"
+api_min = 3
+api_max = 3
+runtime = "native"
+entrypoint = "duplicate_file_detector"
+description = "Detect files with identical content"
+license = "MIT"
+
+[capabilities]
+decorates_entries = true
+formats = ["default", "long"]
+machine_output = true
+
+[permissions]
+filesystem = ["read:tree"]
+
+[[fields]]
+name = "has_duplicates"
+type = "boolean"
+filterable = true
+
+[[fields]]
+name = "is_duplicate"
+type = "boolean"
+filterable = true
+
+[[fields]]
+name = "original_path"
+type = "path"
+filterable = true
+
+[[actions]]
+id = "clear-cache"
+description = "Clear the duplicate file detection cache"
+examples = ["lla plugin run duplicate_file_detector clear-cache"]
+interactive = true
+arguments = []
+output = { type = "none" }
+
+[[actions]]
+id = "help"
+description = "Show help information"
+examples = ["lla plugin run duplicate_file_detector help"]
+interactive = true
+arguments = []
+output = { type = "none" }

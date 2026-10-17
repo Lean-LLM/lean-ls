@@ -1,0 +1,1287 @@
+use crate::commands::args::{Args, OutputMode};
+use crate::config::Config;
+use crate::error::{LlaError, Result};
+use crate::filter::{
+    CaseInsensitiveFilter, CompositeFilter, ExtensionFilter, FileFilter, FilterOperation,
+    GlobFilter, PatternFilter, RegexFilter,
+};
+use crate::formatter::column_config::parse_columns;
+use crate::formatter::{csv as csv_writer, json as json_writer};
+use crate::formatter::{
+    DefaultFormatter, FileFormatter, FuzzyFormatter, GitFormatter, GridFormatter, LongFormatter,
+    RecursiveFormatter, SizeMapFormatter, TableFormatter, TimelineFormatter, TreeFormatter,
+};
+use crate::lister::{
+    archive as archive_lister, BasicLister, FileLister, FuzzyLister, RecursiveLister,
+};
+use crate::plugin::PluginManager;
+use crate::sorter::{AlphabeticalSorter, DateSorter, FileSorter, SizeSorter, SortOptions};
+use crate::utils::cache::ListingCache;
+use crate::utils::{fs_metadata, hyperlink};
+use ignore::WalkBuilder;
+use lla_plugin_interface::proto::{DecoratedEntry, EntryMetadata};
+use rayon::prelude::*;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+pub fn list_directory(
+    args: &Args,
+    config: &Config,
+    plugin_manager: &mut PluginManager,
+    config_error: Option<crate::error::LlaError>,
+) -> Result<()> {
+    hyperlink::set_enabled(args.hyperlinks && matches!(args.output_mode, OutputMode::Human));
+    // Record directory visit for jump history (respect exclude_paths inside)
+    crate::commands::jump::record_visit(&args.directory, config);
+    if let Some(error) = config_error {
+        eprintln!("Warning: {}", error);
+    }
+
+    for plugin in &args.enable_plugin {
+        if let Err(e) = plugin_manager.enable_plugin(plugin) {
+            eprintln!("Failed to enable plugin '{}': {}", plugin, e);
+        }
+    }
+    for plugin in &args.disable_plugin {
+        if let Err(e) = plugin_manager.disable_plugin(plugin) {
+            eprintln!("Failed to disable plugin '{}': {}", plugin, e);
+        }
+    }
+
+    let lister = create_lister(args, config);
+    let sorter = create_sorter(args);
+    let filter = create_filter(args);
+    let formatter = create_formatter(args, config);
+    let format = get_format(args);
+
+    // Archive auto-detection branch
+    let p = std::path::Path::new(&args.directory);
+    let path_is_symlink = p
+        .symlink_metadata()
+        .map(|metadata| metadata.is_symlink())
+        .unwrap_or(false);
+    let path_is_archive =
+        !path_is_symlink && p.is_file() && archive_lister::is_archive_path_str(&args.directory);
+    if path_is_archive {
+        let decorated_files =
+            list_and_decorate_archive_entries(args, &filter, plugin_manager, format)?;
+        let decorated_files = if !args.tree_format && !args.recursive_format {
+            sort_files(decorated_files, &sorter, args)?
+        } else {
+            decorated_files
+        };
+
+        return match args.output_mode {
+            OutputMode::Human => {
+                let formatted_output = formatter.format_files(
+                    decorated_files.as_slice(),
+                    plugin_manager,
+                    args.depth,
+                )?;
+                println!("{}", formatted_output);
+                Ok(())
+            }
+            OutputMode::Json { pretty } => {
+                let include_git_status = args.git_format;
+                json_writer::write_json_array_stream(
+                    decorated_files,
+                    plugin_manager,
+                    pretty,
+                    include_git_status,
+                )
+            }
+            OutputMode::Ndjson => {
+                let include_git_status = args.git_format;
+                json_writer::write_ndjson_stream(
+                    decorated_files,
+                    plugin_manager,
+                    include_git_status,
+                )
+            }
+            OutputMode::Csv => {
+                let include_git_status = args.git_format;
+                csv_writer::write_csv_stream(decorated_files, plugin_manager, include_git_status)
+            }
+        };
+    }
+
+    // Single file path handling: allow listing one file
+    if p.is_file() || path_is_symlink {
+        let decorated_files = list_and_decorate_single_file(args, &filter, plugin_manager, format)?;
+        let decorated_files = if !args.tree_format && !args.recursive_format {
+            sort_files(decorated_files, &sorter, args)?
+        } else {
+            decorated_files
+        };
+
+        return match args.output_mode {
+            OutputMode::Human => {
+                let formatted_output = formatter.format_files(
+                    decorated_files.as_slice(),
+                    plugin_manager,
+                    args.depth,
+                )?;
+                println!("{}", formatted_output);
+                Ok(())
+            }
+            OutputMode::Json { pretty } => {
+                let include_git_status = args.git_format;
+                json_writer::write_json_array_stream(
+                    decorated_files,
+                    plugin_manager,
+                    pretty,
+                    include_git_status,
+                )
+            }
+            OutputMode::Ndjson => {
+                let include_git_status = args.git_format;
+                json_writer::write_ndjson_stream(
+                    decorated_files,
+                    plugin_manager,
+                    include_git_status,
+                )
+            }
+            OutputMode::Csv => {
+                let include_git_status = args.git_format;
+                csv_writer::write_csv_stream(decorated_files, plugin_manager, include_git_status)
+            }
+        };
+    }
+
+    let mut listing_cache: Option<ListingCache> = None;
+    let mut cache_key: Option<String> = None;
+    let mut cache_summary: Option<String> = None;
+    let mut cached_entries: Option<Vec<DecoratedEntry>> = None;
+
+    if !path_is_archive && p.is_dir() {
+        let context = ListingContext::from_args(args, config);
+        cache_summary = Some(context.summary());
+        let key = context.cache_key();
+        cache_key = Some(key.clone());
+        let cache = ListingCache::new()?;
+        if !args.refine_filters.is_empty() {
+            if let Some(entries) = cache.load(&key)? {
+                cached_entries = Some(entries);
+            }
+        }
+        listing_cache = Some(cache);
+    }
+
+    let mut decorated_files = if let Some(entries) = cached_entries {
+        entries
+    } else {
+        let fresh =
+            list_and_decorate_files(args, config, &lister, &filter, plugin_manager, format)?;
+        if let (Some(cache), Some(key), Some(summary)) = (
+            listing_cache.as_mut(),
+            cache_key.as_ref(),
+            cache_summary.as_ref(),
+        ) {
+            cache.save(key, summary, &fresh)?;
+        }
+        fresh
+    };
+
+    if !args.refine_filters.is_empty() {
+        decorated_files =
+            apply_refine_filters(decorated_files, &args.refine_filters, args.case_sensitive)?;
+    }
+
+    let decorated_files = if !args.tree_format && !args.recursive_format {
+        sort_files(decorated_files, &sorter, args)?
+    } else {
+        decorated_files
+    };
+
+    match args.output_mode {
+        OutputMode::Human => {
+            let formatted_output =
+                formatter.format_files(decorated_files.as_slice(), plugin_manager, args.depth)?;
+            println!("{}", formatted_output);
+            Ok(())
+        }
+        OutputMode::Json { pretty } => {
+            // Only include git status if git format was requested
+            let include_git_status = args.git_format;
+            json_writer::write_json_array_stream(
+                decorated_files,
+                plugin_manager,
+                pretty,
+                include_git_status,
+            )
+        }
+        OutputMode::Ndjson => {
+            let include_git_status = args.git_format;
+            json_writer::write_ndjson_stream(decorated_files, plugin_manager, include_git_status)
+        }
+        OutputMode::Csv => {
+            let include_git_status = args.git_format;
+            csv_writer::write_csv_stream(decorated_files, plugin_manager, include_git_status)
+        }
+    }
+}
+
+pub fn get_format(args: &Args) -> &'static str {
+    if args.fuzzy_format {
+        "fuzzy"
+    } else if args.long_format {
+        "long"
+    } else if args.tree_format {
+        "tree"
+    } else if args.table_format {
+        "table"
+    } else if args.grid_format {
+        "grid"
+    } else if args.sizemap_format {
+        "sizemap"
+    } else if args.timeline_format {
+        "timeline"
+    } else if args.git_format {
+        "git"
+    } else if args.recursive_format {
+        "recursive"
+    } else {
+        "default"
+    }
+}
+
+pub fn convert_metadata(metadata: &std::fs::Metadata) -> EntryMetadata {
+    fs_metadata::from_metadata(metadata)
+}
+
+fn metadata_for_path(
+    path: &Path,
+    args: &Args,
+) -> std::io::Result<(EntryMetadata, Option<std::fs::Metadata>)> {
+    let link_metadata = path.symlink_metadata()?;
+    let target_metadata = if link_metadata.is_symlink() {
+        fs::metadata(path).ok()
+    } else {
+        None
+    };
+    let displayed = if args.dereference_symlinks {
+        target_metadata.as_ref().unwrap_or(&link_metadata)
+    } else {
+        &link_metadata
+    };
+    let mut metadata = convert_metadata(displayed);
+    metadata.is_symlink = link_metadata.is_symlink();
+
+    let machine_output = !matches!(args.output_mode, OutputMode::Human);
+    let enriched_path = if args.dereference_symlinks && link_metadata.is_symlink() {
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    };
+    fs_metadata::enrich(
+        &enriched_path,
+        &mut metadata,
+        args.show_xattrs || args.show_context || machine_output,
+        args.show_mounts || machine_output,
+    );
+    Ok((metadata, target_metadata))
+}
+
+fn calculate_dir_size(path: &Path) -> std::io::Result<u64> {
+    if !path.is_dir() {
+        return Ok(0);
+    }
+
+    // Directory entries are already processed in parallel by the caller. Spawning a
+    // nested Rayon traversal at every level creates a huge number of tiny tasks and
+    // makes metadata-heavy trees dramatically slower. Keep one iterative walk per
+    // top-level directory and avoid metadata syscalls for directories and symlinks.
+    let mut pending = vec![path.to_path_buf()];
+    let mut files = Vec::new();
+
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else {
+                files.push(entry.path());
+            }
+        }
+    }
+
+    // Flatten the work before parallelizing it. This keeps a single bounded Rayon
+    // job graph instead of recursively spawning a new parallel reduction for every
+    // directory, while still parallelizing the expensive metadata calls.
+    files
+        .into_par_iter()
+        .try_fold(
+            || 0u64,
+            |total, file| Ok(total.saturating_add(fs::symlink_metadata(file)?.len())),
+        )
+        .try_reduce(|| 0u64, |left, right| Ok(left.saturating_add(right)))
+}
+
+fn needs_directory_sizes(args: &Args, config: &Config) -> bool {
+    if !args.include_dirs {
+        return false;
+    }
+
+    // Machine-readable output should retain complete metadata.
+    if !matches!(args.output_mode, OutputMode::Human) {
+        return true;
+    }
+
+    // Preserve size-aware behavior for views and operations that consume size.
+    (args.long_format
+        && config
+            .formatters
+            .long
+            .columns
+            .iter()
+            .any(|column| column == "size"))
+        || (args.table_format
+            && (config.formatters.table.columns.is_empty()
+                || config
+                    .formatters
+                    .table
+                    .columns
+                    .iter()
+                    .any(|column| column == "size")))
+        || args.sizemap_format
+        || args.fuzzy_format
+        || args.sort_by == "size"
+        || args.size_filter.is_some()
+}
+
+pub fn list_and_decorate_files(
+    args: &Args,
+    config: &Config,
+    lister: &Arc<dyn FileLister + Send + Sync>,
+    filter: &Arc<dyn FileFilter + Send + Sync>,
+    plugin_manager: &mut PluginManager,
+    format: &str,
+) -> Result<Vec<DecoratedEntry>> {
+    let raw_paths = if args.respect_gitignore && !args.fuzzy_format {
+        list_files_with_gitignore(args, config)?
+    } else {
+        lister.list_files(
+            &args.directory,
+            args.tree_format || args.recursive_format,
+            args.depth,
+        )?
+    };
+
+    let should_calculate_dir_sizes = needs_directory_sizes(args, config);
+
+    let entries: Vec<DecoratedEntry> = raw_paths
+        .into_par_iter()
+        .filter(|path| {
+            // Exclude entries if they live under any excluded prefix
+            if config.exclude_paths.is_empty() {
+                return true;
+            }
+            // Ensure we compare absolute paths for robust prefix checks
+            let path_abs = match path.canonicalize() {
+                Ok(abs) => abs,
+                Err(_) => path.clone(),
+            };
+            !config
+                .exclude_paths
+                .iter()
+                .any(|ex| path_abs.starts_with(ex))
+        })
+        .filter_map(|path| {
+            let (mut metadata, target_metadata) = match metadata_for_path(&path, args) {
+                Ok(metadata) => metadata,
+                Err(_) => {
+                    if path.file_name().is_some() {
+                        let mut custom_fields = HashMap::new();
+                        custom_fields.insert("invalid_symlink".to_string(), "true".to_string());
+
+                        if !args.show_symlink_target {
+                            custom_fields
+                                .insert("hide_symlink_target".to_string(), "true".to_string());
+                        }
+
+                        if args.show_symlink_target {
+                            if let Ok(target) = std::fs::read_link(&path) {
+                                custom_fields.insert(
+                                    "symlink_target".to_string(),
+                                    target.to_string_lossy().into_owned(),
+                                );
+                            }
+                        }
+
+                        return Some(DecoratedEntry {
+                            path: path.to_string_lossy().into_owned(),
+                            metadata: Some(EntryMetadata {
+                                size: 0,
+                                modified: 0,
+                                accessed: 0,
+                                created: 0,
+                                is_dir: false,
+                                is_file: false,
+                                is_symlink: true,
+                                permissions: 0,
+                                uid: 0,
+                                gid: 0,
+                                ..EntryMetadata::default()
+                            }),
+                            custom_fields,
+                            typed_fields: Default::default(),
+                        });
+                    }
+                    return None;
+                }
+            };
+
+            let is_dotfile = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with('.'))
+                .unwrap_or(false);
+
+            let is_current_or_parent_dir = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n == "." || n == "..")
+                .unwrap_or(false);
+
+            if (args.dotfiles_only && !is_dotfile)
+                || (args.no_dotfiles && is_dotfile)
+                || (args.almost_all && is_current_or_parent_dir)
+            {
+                return None;
+            }
+
+            let should_include = if args.dirs_only {
+                if metadata.is_symlink {
+                    args.show_symlinks
+                        && target_metadata
+                            .as_ref()
+                            .is_some_and(|target| target.is_dir())
+                } else {
+                    metadata.is_dir
+                }
+            } else if args.files_only {
+                if metadata.is_symlink {
+                    args.show_symlinks
+                        && target_metadata
+                            .as_ref()
+                            .is_some_and(|target| target.is_file())
+                } else {
+                    metadata.is_file
+                }
+            } else if args.symlinks_only {
+                metadata.is_symlink && !args.no_symlinks
+            } else if metadata.is_symlink {
+                !args.no_symlinks
+            } else {
+                let include_dirs = !args.no_dirs;
+                let include_files = !args.no_files;
+
+                (metadata.is_dir && include_dirs) || (metadata.is_file && include_files)
+            };
+
+            if !should_include {
+                return None;
+            }
+
+            if !filter
+                .filter_files(std::slice::from_ref(&path))
+                .map(|v| !v.is_empty())
+                .unwrap_or(false)
+            {
+                return None;
+            }
+
+            if should_calculate_dir_sizes && metadata.is_dir {
+                if let Ok(dir_size) = calculate_dir_size(&path) {
+                    metadata.size = dir_size;
+                }
+            }
+
+            if !matches_metadata_filters(args, &metadata) {
+                return None;
+            }
+
+            let mut custom_fields = HashMap::new();
+            if metadata.is_symlink {
+                if !args.show_symlink_target {
+                    custom_fields.insert("hide_symlink_target".to_string(), "true".to_string());
+                }
+                if args.show_symlink_target {
+                    if let Ok(target) = std::fs::read_link(&path) {
+                        custom_fields.insert(
+                            "symlink_target".to_string(),
+                            target.to_string_lossy().into_owned(),
+                        );
+                    }
+                }
+                if target_metadata.is_none() {
+                    custom_fields.insert("invalid_symlink".to_string(), "true".to_string());
+                }
+            }
+
+            Some(DecoratedEntry {
+                path: path.to_string_lossy().into_owned(),
+                metadata: Some(metadata),
+                custom_fields,
+                typed_fields: Default::default(),
+            })
+        })
+        .collect();
+
+    let mut decorated_entries = entries;
+    plugin_manager.decorate_entries(&mut decorated_entries, format);
+
+    Ok(decorated_entries)
+}
+
+fn list_files_with_gitignore(args: &Args, config: &Config) -> Result<Vec<PathBuf>> {
+    let should_recurse = args.tree_format || args.recursive_format;
+    let mut builder = WalkBuilder::new(&args.directory);
+    builder
+        .hidden(false)
+        .follow_links(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .parents(true)
+        .ignore(true)
+        .require_git(false)
+        .same_file_system(true);
+
+    if args.respect_gitignore {
+        builder.filter_entry(|entry| !path_contains_git_dir(entry.path()));
+    }
+
+    if !should_recurse {
+        builder.max_depth(Some(1));
+    } else if let Some(depth) = args.depth {
+        builder.max_depth(Some(depth));
+    }
+
+    let max_entries = config.listers.recursive.max_entries.unwrap_or(usize::MAX);
+
+    let mut entries = Vec::new();
+    let mut file_counter = 0usize;
+
+    for dent in builder.build() {
+        let entry = dent.map_err(|err| LlaError::Other(err.to_string()))?;
+
+        if args.respect_gitignore && path_contains_git_dir(entry.path()) {
+            if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                continue;
+            }
+            continue;
+        }
+        if entry.depth() == 0 {
+            continue;
+        }
+
+        if should_recurse {
+            if let Some(ft) = entry.file_type() {
+                if ft.is_file() {
+                    if file_counter >= max_entries {
+                        break;
+                    }
+                    file_counter += 1;
+                }
+            }
+        }
+
+        entries.push(entry.into_path());
+    }
+
+    Ok(entries)
+}
+
+fn path_contains_git_dir(path: &Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == ".git")
+}
+
+pub fn list_and_decorate_archive_entries(
+    args: &Args,
+    filter: &Arc<dyn FileFilter + Send + Sync>,
+    plugin_manager: &mut PluginManager,
+    format: &str,
+) -> Result<Vec<DecoratedEntry>> {
+    use std::path::Path;
+
+    let archive_path = Path::new(&args.directory);
+    let lower = args.directory.to_lowercase();
+    let entries = if lower.ends_with(".zip") {
+        archive_lister::read_zip(archive_path)?
+    } else if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
+        archive_lister::read_tar_gz(archive_path)?
+    } else if lower.ends_with(".tar") {
+        archive_lister::read_tar_file(archive_path)?
+    } else {
+        return Err(crate::error::LlaError::Other(
+            "Unsupported archive format".to_string(),
+        ));
+    };
+
+    let root_name = archive_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+
+    // Filter and options
+    let mut filtered: Vec<DecoratedEntry> = Vec::with_capacity(entries.len());
+    for mut entry in entries.into_iter() {
+        let pb = PathBuf::from(&entry.path);
+
+        // Exclude synthetic root from all views
+        if pb == root_name {
+            continue;
+        }
+
+        // For non-tree/non-recursive views, restrict to top-level only unless long format is used.
+        // Long format on archives shows the full contents for convenience.
+        let restrict_to_top_level =
+            !args.tree_format && !args.recursive_format && !args.long_format;
+        if restrict_to_top_level {
+            let parent = pb.parent().map(|p| p.to_path_buf());
+            if parent.as_deref() != Some(Path::new(&root_name)) {
+                continue;
+            }
+        }
+
+        let md = entry.metadata.clone().unwrap_or(EntryMetadata {
+            size: 0,
+            modified: 0,
+            accessed: 0,
+            created: 0,
+            is_dir: false,
+            is_file: false,
+            is_symlink: false,
+            permissions: 0,
+            uid: 0,
+            gid: 0,
+            ..EntryMetadata::default()
+        });
+
+        let is_dotfile = pb
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with('.'))
+            .unwrap_or(false);
+
+        let is_current_or_parent_dir = pb
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n == "." || n == "..")
+            .unwrap_or(false);
+
+        if (args.dotfiles_only && !is_dotfile)
+            || (args.no_dotfiles && is_dotfile)
+            || (args.almost_all && is_current_or_parent_dir)
+        {
+            continue;
+        }
+
+        let should_include = if args.dirs_only {
+            md.is_dir
+        } else if args.files_only {
+            md.is_file
+        } else if args.symlinks_only {
+            md.is_symlink && !args.no_symlinks
+        } else {
+            let include_dirs = !args.no_dirs;
+            let include_files = !args.no_files;
+            let include_symlinks = !args.no_symlinks;
+
+            (md.is_dir && include_dirs)
+                || (md.is_file && include_files)
+                || (md.is_symlink && include_symlinks)
+        };
+
+        if !should_include {
+            continue;
+        }
+
+        if !matches_metadata_filters(args, &md) {
+            continue;
+        }
+
+        // Apply name/path filters
+        if !filter
+            .filter_files(std::slice::from_ref(&pb))
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        plugin_manager.decorate_entry(&mut entry, format);
+        filtered.push(entry);
+    }
+
+    Ok(filtered)
+}
+
+pub fn list_and_decorate_single_file(
+    args: &Args,
+    filter: &Arc<dyn FileFilter + Send + Sync>,
+    plugin_manager: &mut PluginManager,
+    format: &str,
+) -> Result<Vec<DecoratedEntry>> {
+    use std::fs;
+    use std::path::Path;
+
+    let path = Path::new(&args.directory);
+    let mut entries: Vec<DecoratedEntry> = Vec::with_capacity(1);
+
+    // Apply filter against this single path
+    if !filter
+        .filter_files(std::slice::from_ref(&path.to_path_buf()))
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+    {
+        return Ok(entries);
+    }
+
+    // Read metadata and map to EntryMetadata
+    let (mut metadata, target_metadata) = metadata_for_path(path, args)?;
+
+    if args.include_dirs && metadata.is_dir {
+        if let Ok(dir_size) = calculate_dir_size(path) {
+            metadata.size = dir_size;
+        }
+    }
+
+    if !matches_metadata_filters(args, &metadata) {
+        return Ok(entries);
+    }
+
+    let mut custom_fields = HashMap::new();
+    if metadata.is_symlink {
+        if !args.show_symlink_target {
+            custom_fields.insert("hide_symlink_target".to_string(), "true".to_string());
+        }
+        if args.show_symlink_target {
+            if let Ok(target) = fs::read_link(path) {
+                custom_fields.insert(
+                    "symlink_target".to_string(),
+                    target.to_string_lossy().into_owned(),
+                );
+            }
+        }
+        if target_metadata.is_none() {
+            custom_fields.insert("invalid_symlink".to_string(), "true".to_string());
+        }
+    }
+
+    let mut entry = DecoratedEntry {
+        path: path.to_string_lossy().into_owned(),
+        metadata: Some(metadata),
+        custom_fields,
+        typed_fields: Default::default(),
+    };
+
+    plugin_manager.decorate_entry(&mut entry, format);
+    entries.push(entry);
+    Ok(entries)
+}
+
+pub fn sort_files(
+    files: Vec<DecoratedEntry>,
+    sorter: &Arc<dyn FileSorter + Send + Sync>,
+    args: &Args,
+) -> Result<Vec<DecoratedEntry>> {
+    let mut entries_with_paths: Vec<(PathBuf, &DecoratedEntry)> = files
+        .iter()
+        .map(|entry| (PathBuf::from(&entry.path), entry))
+        .collect();
+
+    let options = SortOptions {
+        reverse: args.sort_reverse,
+        dirs_first: args.sort_dirs_first,
+        case_sensitive: args.sort_case_sensitive,
+        natural: args.sort_natural,
+    };
+
+    sorter.sort_files_with_metadata(&mut entries_with_paths, options)?;
+
+    let sorted_files = entries_with_paths
+        .into_iter()
+        .map(|(_, entry)| entry)
+        .cloned()
+        .collect();
+
+    Ok(sorted_files)
+}
+
+pub fn create_lister(args: &Args, config: &Config) -> Arc<dyn FileLister + Send + Sync> {
+    if args.fuzzy_format {
+        Arc::new(FuzzyLister::new(config.clone(), args.respect_gitignore))
+    } else if args.tree_format || args.recursive_format {
+        Arc::new(RecursiveLister::new(config.clone()))
+    } else {
+        Arc::new(BasicLister)
+    }
+}
+
+pub fn create_sorter(args: &Args) -> Arc<dyn FileSorter + Send + Sync> {
+    let sorter: Arc<dyn FileSorter + Send + Sync> = match args.sort_by.as_str() {
+        "name" => Arc::new(AlphabeticalSorter),
+        "size" => Arc::new(SizeSorter),
+        "date" => Arc::new(DateSorter),
+        _ => Arc::new(AlphabeticalSorter),
+    };
+
+    sorter
+}
+
+pub fn create_filter(args: &Args) -> Arc<dyn FileFilter + Send + Sync> {
+    match &args.filter {
+        Some(filter_str) => {
+            if filter_str.contains(" AND ") {
+                let mut composite = CompositeFilter::new(FilterOperation::And);
+                for part in filter_str.split(" AND ") {
+                    composite.add_filter(create_base_filter(part.trim(), !args.case_sensitive));
+                }
+                Arc::new(composite)
+            } else if filter_str.contains(" OR ") {
+                let mut composite = CompositeFilter::new(FilterOperation::Or);
+                for part in filter_str.split(" OR ") {
+                    composite.add_filter(create_base_filter(part.trim(), !args.case_sensitive));
+                }
+                Arc::new(composite)
+            } else if let Some(pattern) = filter_str.strip_prefix("NOT ") {
+                let mut composite = CompositeFilter::new(FilterOperation::Not);
+                composite.add_filter(create_base_filter(pattern, !args.case_sensitive));
+                Arc::new(composite)
+            } else if let Some(pattern) = filter_str.strip_prefix("XOR ") {
+                let mut composite = CompositeFilter::new(FilterOperation::Xor);
+                composite.add_filter(create_base_filter(pattern, !args.case_sensitive));
+                Arc::new(composite)
+            } else {
+                Arc::from(create_base_filter(filter_str, !args.case_sensitive))
+            }
+        }
+        None => Arc::new(PatternFilter::new("".to_string())),
+    }
+}
+
+fn create_base_filter(pattern: &str, case_insensitive: bool) -> Box<dyn FileFilter + Send + Sync> {
+    let base_filter: Box<dyn FileFilter + Send + Sync> =
+        if let Some(pattern) = pattern.strip_prefix("regex:") {
+            Box::new(RegexFilter::new(pattern.to_string()))
+        } else if let Some(pattern) = pattern.strip_prefix("glob:") {
+            Box::new(GlobFilter::new(pattern.to_string()))
+        } else if let Some(pattern) = pattern.strip_prefix('.') {
+            Box::new(ExtensionFilter::new(pattern.to_string()))
+        } else {
+            Box::new(PatternFilter::new(pattern.to_string()))
+        };
+
+    if case_insensitive {
+        Box::new(CaseInsensitiveFilter::new(base_filter))
+    } else {
+        base_filter
+    }
+}
+
+pub fn create_formatter(args: &Args, config: &Config) -> Box<dyn FileFormatter> {
+    if args.fuzzy_format {
+        Box::new(FuzzyFormatter::new(
+            args.show_icons,
+            args.permission_format.clone(),
+        ))
+    } else if args.long_format {
+        let columns =
+            add_requested_metadata_columns(parse_columns(&config.formatters.long.columns), args);
+        Box::new(LongFormatter::new(
+            args.show_icons,
+            args.permission_format.clone(),
+            args.hide_group,
+            args.relative_dates,
+            args.date_format.clone(),
+            columns,
+        ))
+    } else if args.tree_format {
+        Box::new(TreeFormatter::new(args.show_icons))
+    } else if args.table_format {
+        let columns =
+            add_requested_metadata_columns(parse_columns(&config.formatters.table.columns), args);
+        Box::new(TableFormatter::new(
+            args.show_icons,
+            args.permission_format.clone(),
+            columns,
+        ))
+    } else if args.grid_format {
+        Box::new(GridFormatter::new(
+            args.show_icons,
+            args.grid_ignore || config.formatters.grid.ignore_width,
+            config.formatters.grid.max_width,
+        ))
+    } else if args.sizemap_format {
+        Box::new(SizeMapFormatter::new(args.show_icons))
+    } else if args.timeline_format {
+        Box::new(TimelineFormatter::new(args.show_icons))
+    } else if args.git_format {
+        Box::new(GitFormatter::new(args.show_icons))
+    } else if args.recursive_format {
+        Box::new(RecursiveFormatter::new(args.show_icons))
+    } else {
+        Box::new(DefaultFormatter::new(args.show_icons))
+    }
+}
+
+fn add_requested_metadata_columns(
+    mut columns: Vec<crate::formatter::column_config::ColumnKey>,
+    args: &Args,
+) -> Vec<crate::formatter::column_config::ColumnKey> {
+    use crate::formatter::column_config::ColumnKey;
+
+    fn insert_before_name(columns: &mut Vec<ColumnKey>, column: ColumnKey) {
+        if columns.contains(&column) {
+            return;
+        }
+        let index = columns
+            .iter()
+            .position(|candidate| matches!(candidate, ColumnKey::Name))
+            .unwrap_or(columns.len());
+        columns.insert(index, column);
+    }
+
+    if args.show_inode && !columns.contains(&ColumnKey::Inode) {
+        columns.insert(0, ColumnKey::Inode);
+    }
+    if args.show_hard_links {
+        insert_before_name(&mut columns, ColumnKey::HardLinks);
+    }
+    if args.show_allocated_size {
+        insert_before_name(&mut columns, ColumnKey::AllocatedSize);
+    }
+    if args.show_xattrs {
+        insert_before_name(&mut columns, ColumnKey::Xattrs);
+    }
+    if args.show_context {
+        insert_before_name(&mut columns, ColumnKey::Context);
+    }
+    if args.show_mounts {
+        insert_before_name(&mut columns, ColumnKey::Mount);
+    }
+    columns
+}
+
+fn matches_metadata_filters(args: &Args, metadata: &EntryMetadata) -> bool {
+    if let Some(size_range) = &args.size_filter {
+        if !size_range.matches(metadata.size) {
+            return false;
+        }
+    }
+
+    if let Some(modified_range) = &args.modified_filter {
+        if metadata.modified == 0 || !modified_range.matches_epoch_secs(metadata.modified) {
+            return false;
+        }
+    }
+
+    if let Some(created_range) = &args.created_filter {
+        if metadata.created == 0 || !created_range.matches_epoch_secs(metadata.created) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn apply_refine_filters(
+    entries: Vec<DecoratedEntry>,
+    refinements: &[String],
+    case_sensitive: bool,
+) -> Result<Vec<DecoratedEntry>> {
+    if refinements.is_empty() {
+        return Ok(entries);
+    }
+
+    let mut current_paths: Vec<PathBuf> = entries
+        .iter()
+        .map(|entry| PathBuf::from(&entry.path))
+        .collect();
+
+    for expr in refinements {
+        let filter = create_base_filter(expr, !case_sensitive);
+        current_paths = filter.filter_files(&current_paths)?;
+        if current_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+    }
+
+    let allowed: HashSet<String> = current_paths
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+
+    Ok(entries
+        .into_iter()
+        .filter(|entry| allowed.contains(&entry.path))
+        .collect())
+}
+
+#[derive(Serialize)]
+struct ListingContext {
+    directory: String,
+    canonical_directory: Option<String>,
+    depth: Option<usize>,
+    tree_format: bool,
+    recursive_format: bool,
+    include_dir_sizes: bool,
+    dirs_only: bool,
+    files_only: bool,
+    symlinks_only: bool,
+    show_symlinks: bool,
+    no_dirs: bool,
+    no_files: bool,
+    no_symlinks: bool,
+    dereference_symlinks: bool,
+    collect_extended_metadata: bool,
+    collect_mount_metadata: bool,
+    no_dotfiles: bool,
+    almost_all: bool,
+    dotfiles_only: bool,
+    respect_gitignore: bool,
+    filter: Option<String>,
+    size: Option<String>,
+    modified: Option<String>,
+    created: Option<String>,
+    case_sensitive: bool,
+    preset_names: Vec<String>,
+    exclude_paths: Vec<String>,
+}
+
+impl ListingContext {
+    fn from_args(args: &Args, config: &Config) -> Self {
+        ListingContext {
+            directory: args.directory.clone(),
+            canonical_directory: canonicalize_path_for_cache(&args.directory),
+            depth: args.depth,
+            tree_format: args.tree_format,
+            recursive_format: args.recursive_format,
+            include_dir_sizes: needs_directory_sizes(args, config),
+            dirs_only: args.dirs_only,
+            files_only: args.files_only,
+            symlinks_only: args.symlinks_only,
+            show_symlinks: args.show_symlinks,
+            no_dirs: args.no_dirs,
+            no_files: args.no_files,
+            no_symlinks: args.no_symlinks,
+            dereference_symlinks: args.dereference_symlinks,
+            collect_extended_metadata: args.show_xattrs
+                || args.show_context
+                || !matches!(args.output_mode, OutputMode::Human),
+            collect_mount_metadata: args.show_mounts
+                || !matches!(args.output_mode, OutputMode::Human),
+            no_dotfiles: args.no_dotfiles,
+            almost_all: args.almost_all,
+            dotfiles_only: args.dotfiles_only,
+            respect_gitignore: args.respect_gitignore,
+            filter: args.filter.clone(),
+            size: args.size_filter_raw.clone(),
+            modified: args.modified_filter_raw.clone(),
+            created: args.created_filter_raw.clone(),
+            case_sensitive: args.case_sensitive,
+            preset_names: args.presets.clone(),
+            exclude_paths: config
+                .exclude_paths
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
+        }
+    }
+
+    fn cache_key(&self) -> String {
+        let json = serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string());
+        let mut hasher = Sha256::new();
+        hasher.update(json.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+
+    fn summary(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string())
+    }
+}
+
+fn canonicalize_path_for_cache(path: &str) -> Option<String> {
+    fs::canonicalize(path)
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::{symlink, MetadataExt};
+
+    fn args_with_include_dirs() -> Args {
+        Args {
+            directory: ".".to_string(),
+            depth: None,
+            long_format: false,
+            tree_format: false,
+            table_format: false,
+            grid_format: false,
+            grid_ignore: false,
+            sizemap_format: false,
+            timeline_format: false,
+            git_format: false,
+            fuzzy_format: false,
+            recursive_format: false,
+            show_icons: false,
+            hyperlinks: false,
+            no_color: true,
+            sort_by: "name".to_string(),
+            sort_reverse: false,
+            sort_dirs_first: false,
+            sort_case_sensitive: false,
+            sort_natural: false,
+            filter: None,
+            presets: Vec::new(),
+            size_filter: None,
+            size_filter_raw: None,
+            modified_filter: None,
+            modified_filter_raw: None,
+            created_filter: None,
+            created_filter_raw: None,
+            case_sensitive: false,
+            refine_filters: Vec::new(),
+            enable_plugin: Vec::new(),
+            disable_plugin: Vec::new(),
+            plugins_dir: PathBuf::new(),
+            include_dirs: true,
+            dirs_only: false,
+            files_only: false,
+            symlinks_only: false,
+            show_symlinks: false,
+            no_dirs: false,
+            no_files: false,
+            no_symlinks: false,
+            dereference_symlinks: false,
+            show_symlink_target: true,
+            no_dotfiles: false,
+            almost_all: false,
+            dotfiles_only: false,
+            respect_gitignore: false,
+            permission_format: "symbolic".to_string(),
+            hide_group: false,
+            relative_dates: false,
+            date_format: crate::config::DEFAULT_LONG_DATE_FORMAT.to_string(),
+            show_inode: false,
+            show_hard_links: false,
+            show_allocated_size: false,
+            show_xattrs: false,
+            show_context: false,
+            show_mounts: false,
+            output_mode: OutputMode::Human,
+            command: None,
+            search: None,
+            search_context: 2,
+            search_pipelines: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn skips_directory_sizes_for_non_size_human_views() {
+        let mut args = args_with_include_dirs();
+        args.grid_format = true;
+        let config = Config::default();
+
+        assert!(!needs_directory_sizes(&args, &config));
+
+        let context = ListingContext::from_args(&args, &config);
+        assert!(!context.include_dir_sizes);
+    }
+
+    #[test]
+    fn resolves_specialized_plugin_formats() {
+        let mut args = args_with_include_dirs();
+        args.sizemap_format = true;
+        assert_eq!(get_format(&args), "sizemap");
+
+        args.sizemap_format = false;
+        args.timeline_format = true;
+        assert_eq!(get_format(&args), "timeline");
+
+        args.timeline_format = false;
+        args.git_format = true;
+        assert_eq!(get_format(&args), "git");
+    }
+
+    #[test]
+    fn includes_directory_sizes_for_size_aware_views_and_outputs() {
+        let config = Config::default();
+        let mut long_args = args_with_include_dirs();
+        long_args.long_format = true;
+        assert!(needs_directory_sizes(&long_args, &config));
+
+        let mut json_args = args_with_include_dirs();
+        json_args.output_mode = OutputMode::Json { pretty: false };
+        assert!(needs_directory_sizes(&json_args, &config));
+
+        let mut sorted_args = args_with_include_dirs();
+        sorted_args.sort_by = "size".to_string();
+        assert!(needs_directory_sizes(&sorted_args, &config));
+
+        let context = ListingContext::from_args(&long_args, &config);
+        assert!(context.include_dir_sizes);
+    }
+
+    #[test]
+    fn skips_directory_sizes_when_detailed_view_omits_size_column() {
+        let mut args = args_with_include_dirs();
+        args.long_format = true;
+        let mut config = Config::default();
+        config.formatters.long.columns = vec!["permissions".into(), "name".into()];
+
+        assert!(!needs_directory_sizes(&args, &config));
+    }
+
+    #[test]
+    fn iterative_directory_size_counts_files_and_skips_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("nested");
+        fs::create_dir(&nested).unwrap();
+        fs::write(root.path().join("one"), [0u8; 7]).unwrap();
+        fs::write(nested.join("two"), [0u8; 11]).unwrap();
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.path().join("one"), nested.join("link")).unwrap();
+
+        assert_eq!(calculate_dir_size(root.path()).unwrap(), 18);
+    }
+
+    #[test]
+    fn dereferenced_symlink_keeps_link_identity_and_uses_target_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target");
+        let link = directory.path().join("link");
+        fs::write(&target, vec![0u8; 1024]).unwrap();
+        symlink(&target, &link).unwrap();
+
+        let mut args = args_with_include_dirs();
+        args.include_dirs = false;
+        let (link_metadata, target_metadata) = metadata_for_path(&link, &args).unwrap();
+        assert!(link_metadata.is_symlink);
+        assert_ne!(link_metadata.size, 1024);
+        assert!(target_metadata.is_some());
+
+        args.dereference_symlinks = true;
+        let (dereferenced, _) = metadata_for_path(&link, &args).unwrap();
+        assert!(dereferenced.is_symlink);
+        assert!(dereferenced.is_file);
+        assert_eq!(dereferenced.size, 1024);
+        assert_eq!(dereferenced.inode, fs::metadata(target).unwrap().ino());
+    }
+}

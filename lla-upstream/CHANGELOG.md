@@ -1,0 +1,1040 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.6.6] - 2026-10-07
+
+### Added
+
+- `lla --license` prints the full MIT license embedded in the executable,
+  including Windows releases. Windows usage documentation and release smoke
+  checks cover the license and all five supported completion shells.
+
+### Fixed
+
+- Shell completion generation now prints scripts to stdout by default for Bash,
+  Fish, Zsh, PowerShell, and Elvish. Use `--output` or `--path` to save a script
+  to a file.
+
+
+## [0.6.5] - 2026-09-21
+
+### Fixed
+
+- The Unix installer can once again be executed through the documented
+  `curl ... | bash` command without an unset `BASH_SOURCE` error.
+- The Windows installer now handles GitHub checksum manifests correctly in
+  Windows PowerShell 5.1 and avoids its legacy Internet Explorer parsing prompt.
+
+
+## [0.6.4] - 2026-08-21
+
+### Added
+
+- Official Windows AMD64 and ARM64 executables now ship with native and WASM
+  plugin support, matching prebuilt plugin `.zip` archives, native CI coverage,
+  and statically linked MSVC runtimes.
+- A checksum-verifying PowerShell installer supports latest or pinned releases,
+  custom installation directories, and optional user `PATH` updates.
+
+### Changed
+
+- Filesystem metadata and permission formatting now compile portably on Windows;
+  Windows uses deterministic synthetic permission bits and reports unavailable
+  Unix-only metadata as empty machine fields or `-` in human output.
+- `lla upgrade` recognizes Windows AMD64/ARM64 `.exe` assets and safely replaces
+  the running executable.
+
+
+## [0.6.3] - 2026-08-20
+
+### Added
+
+- Official releases now include a native `lla-netbsd-amd64` binary. The install
+  script and `lla upgrade` recognize NetBSD amd64 and verify this asset through
+  the shared release checksum manifest.
+
+### Fixed
+
+- Wasmtime and its host integrations are now gated behind the non-default
+  `wasm-plugins` feature, restoring default builds on NetBSD and other hosts
+  that cannot compile the embedded runtime. Official Linux and macOS release
+  binaries continue to enable WASM plugins explicitly; the NetBSD binary uses
+  the default native-plugin feature set.
+- The terminal event backend now uses Crossterm 0.28 and Mio 1.x, fixing native
+  release compilation against NetBSD 10.1's current kqueue bindings.
+
+
+## [0.6.2] - 2026-08-18
+
+### Changed
+
+- The bundled `file_hash` plugin now ships as a native Plugin Platform v3
+  library on every supported release architecture.
+
+### Fixed
+
+- WASM permission prompts now suspend active plugin-install progress bars, so
+  approvals remain visible and interactive instead of appearing to hang during
+  prebuilt or source installation.
+
+
+## [0.6.1] - 2026-08-17
+
+### Added
+
+- `reclaimable_space`, `activity_history`, `tree_summary`, and `change_risk` plugins for sizemap, timeline, tree, and Git views.
+- Plugin decoration and formatting support across specialized human-readable views, including directory summaries in tree output and complete plugin annotations in timeline output.
+
+
+## [0.6.0] - 2026-08-17
+
+### Added
+
+- OSC 8 file hyperlinks with `--hyperlink=always|auto|never` across human-readable views.
+- Long-view columns and machine-output fields for inode numbers, hard-link counts, allocated size, extended attributes, ACL/SELinux context, and mount details.
+- Symlink controls for target metadata (`--dereference`), target visibility (`--no-symlink-target`), and inclusion alongside file/directory filters (`--show-symlinks`).
+- Plugin Platform v3 with public `lla_plugin_sdk` and `lla_plugin_sdk_macros` crates, embedded manifest contracts, a Component Model WIT world, and overridable native batch decoration.
+- Native batch formatting plus bounded persistent plugin caches with metadata-, repository-, configuration-, and TTL-based invalidation.
+- Typed action arguments and structured `none`, `text`, `value`, and `table` results with host-rendered human, JSON, NDJSON, and CSV output through `lla plugin run`.
+- An embedded Wasmtime/WASI Preview 2 runtime on 64-bit Linux and macOS, including memory, response, batch, and execution-time limits.
+- Persisted `plugin-grants.toml` approvals, permission-expansion prompts, exact-domain WASI HTTP, default-denied raw sockets, and gated clipboard and URL-opening calls.
+- `lla plugin migrate --prebuilt` with timestamped legacy backups, third-party plugin reporting, and failed-migration restoration.
+
+### Changed
+
+- Native plugins now export only `_plugin_create_v3`; API v1/v2 libraries are detected without invoking their code and reported as disabled.
+- `plugin.toml` schema 3 is the source of truth for actions, fields, output contracts, runtime entrypoints, and permissions. Packaged and compiled manifests must match exactly.
+- All bundled plugins and prebuilt-package manifests target API v3 and version 0.6.0.
+- File hashing, duplicate detection, Git status/history, directory metadata, complexity, keyword, media, and project-context decoration now batch shared work; network-backed package and suggestion plugins reuse TTL caches and issue independent requests concurrently.
+- `lla plugin <plugin> <action>` remains available in 0.6.x but emits a deprecation warning in favor of `lla plugin run`.
+
+### Fixed
+
+- Local source installs checksum only the immutable manifest and resolved runtime entrypoint, so first-run plugin configuration and cache writes no longer invalidate packages and logical native entrypoints resolve correctly on each platform.
+- Local source installation on macOS disables native-plugin stripping, preventing malformed Mach-O `LINKEDIT` string pools.
+- Code-complexity batch decoration no longer deadlocks while recording report statistics.
+- Git status no longer enumerates ignored files that cannot contribute to its displayed status, avoiding oversized caches for repositories with large build directories.
+
+### Security
+
+- WASM plugins run with default-denied capabilities, exact network-domain allowlists, stable host error codes for traps and timeouts, a 128 MiB memory limit, and a 16 MiB response limit.
+- WASM packages requesting subprocess execution are rejected, and WASM packages return an explicit unsupported-runtime error on i686.
+
+## [0.5.12] - 2026-08-15
+
+### Added
+
+- Plugin Platform v2 with manifest-based packages, API-range negotiation, plugin-owned response buffers, batch decoration, typed machine-output fields, declared permissions, ordered user/system discovery, package diagnostics, and per-package checksums.
+- Plugin lifecycle destruction, panic isolation, bounded responses, functional contract probes, and CI/release conformance gates for every bundled plugin.
+- `lla plugin doctor`, `lla plugin info <name>`, and `lla plugin permissions <name>` for inspecting v2 installations.
+- `security_audit` plugin for unsafe permissions, SUID/SGID bits, suspicious symlinks, and exposed secret-like files.
+- `media_inspector` plugin for MIME detection, built-in image dimensions, optional EXIF, and ffprobe-backed audio/video metadata.
+- `project_context` plugin for Rust, Node, Python, and Go detection with lockfile, artifact, toolchain, and Git health fields.
+- `trash` plugin for cross-platform recoverable deletion, listing, conflict-safe restoration, and age-gated permanent emptying.
+- `preview` plugin with bat text/Markdown highlighting, chafa image rendering, safe archive listings, and built-in fallbacks.
+
+### Changed
+
+- All bundled plugins now ship with v2 manifests and are packaged as self-contained directories while legacy flat v1 libraries remain loadable during migration.
+- Invalid plugins are quarantined for recovery by `lla clean` instead of being permanently deleted.
+- `file_remover remove` now moves selected entries to recoverable trash; irreversible deletion is available only through the explicit `purge` action and confirmation.
+
+### Migration
+
+- Existing flat v1 plugins continue to load, but newly distributed plugins should use the v2 package directory layout.
+- Automations that require irreversible deletion must replace `file_remover remove` with `file_remover purge`; `remove` is now recoverable by design.
+
+## [0.5.11] - 2026-08-15
+
+### Added
+
+- Static core-only musl binaries are now published for Linux amd64 and arm64, with automatic musl selection in the shell installer and in-app upgrades.
+
+### Fixed
+
+- GNU/Linux release binaries and plugins now target glibc 2.28 explicitly, preventing build-runner updates from breaking Raspberry Pi OS and other supported older distributions.
+- amd64 and arm64 Alpine packages now contain native static musl binaries instead of GNU binaries.
+
+
+## [0.5.10] - 2026-08-15
+
+### Changed
+
+- Plugin libraries are now loaded on demand, plugin format capabilities are cached, custom long-date formats are compiled once, and listing caches use compact serialization to reduce startup, formatting, and cache overhead.
+
+### Fixed
+
+- Recursive directory-size calculation no longer creates nested parallel task graphs that could make ordinary listings extremely slow and memory-heavy; sizing now uses a bounded flat traversal, skips filtered entries, and is avoided when the active view does not consume directory sizes.
+- Repeated visits to the current directory no longer rewrite unchanged jump history.
+- Config date-format tests now write only to isolated temporary paths instead of touching the user's global configuration.
+
+
+## [0.5.9] - 2026-07-04
+
+### Fixed
+
+- Existing configs with a missing plugins directory now recreate that directory during load instead of warning and falling back to defaults.
+
+
+## [0.5.8] - 2026-07-04
+
+### Added
+
+- Long format now supports custom absolute date formatting with `--date-format` and `[formatters.long].date_format`, making year-inclusive timestamps possible without changing the default output.
+
+### Fixed
+
+- No-color symbolic permissions now render as normal 10-character permission strings instead of repeating permission blocks in long-style output.
+
+
+## [0.5.7] - 2026-05-08
+
+### Added
+
+- `folder_cleaner history`, `show-plan`, and `doctor` actions for saved plan/run inspection, run-health diagnostics, and repairable restore workflows.
+
+### Changed
+
+- Upgraded `folder_cleaner` planning and execution with aggressive quarantine-only cleanup defaults, preflight validation, incremental run manifests, richer previews, modern image-format rules, and safer destination-folder handling.
+- Improved `folder_cleaner clean` approval for large plans with a compact action-mode selector instead of echoing every selected action into the terminal prompt.
+
+### Fixed
+
+- Existing `folder_cleaner` configs now merge newly supported default rules, so modern image formats such as AVIF, TIFF, and raw camera files are organized without recreating the config.
+- `folder_cleaner restore` and `apply` now provide helpful recovery when a plan id, or a run-like id made from a plan timestamp, is passed to the wrong command.
+- Box and table UI rendering now keeps borders aligned without recoloring or stretching cell content.
+
+
+## [0.5.6] - 2026-05-08
+
+### Added
+
+- **Folder Cleaner Plugin** (`folder_cleaner`): find and clean common generated folders from projects.
+- **Color output mode**: control when lla emits colored output.
+- `sizemap` total summary output for a quick aggregate size overview.
+
+### Changed
+
+- Refined plugin management and installer output with boxed sections, aligned plugin/version rows, clearer update/install summaries, and terminal-width-aware truncation.
+
+### Fixed
+
+- Formatter plugin loading now reports safe errors instead of unwrapping failures.
+
+
+## [0.5.5] - 2026-05-02
+
+### Fixed
+
+- Avoid recursive directory size calculation in non-size views, improving performance for large parent directories when `include_dirs = true` while preserving recursive sizing for size-aware outputs and filters. Thanks to @Maanas-Verma for the fix in [#154](https://github.com/chaqchase/lla/pull/154).
+
+### Changed
+
+- Reworked releases into a shorter prepare-and-merge flow:
+  - `Prepare Release` now opens a conventional release-prep PR that bumps workspace, internal dependency, plugin, lockfile, and changelog versions.
+  - Merging the release-prep PR now creates the matching `vX.Y.Z` tag automatically and runs the release pipeline.
+  - Release publishing now builds and verifies all binaries, plugin archives, OS packages, themes, and checksums before publishing crates.io packages and the GitHub release.
+  - Changelog entries can now be written under `## [Unreleased]`; the prepare workflow promotes that section to the target version and leaves a fresh `## [Unreleased]` section.
+
+
+## [0.5.4] - 2026-01-29
+
+### Fixed
+
+- `--no-dotfiles` precedence between CLI flag and config: previously, the CLI flag alone was not enough to hide dotfiles because the logic required `config.filter.no_dotfiles` to also be `true`. Now either the CLI flag (`--no-dotfiles`) or the config setting (`filter.no_dotfiles = true`) will hide dotfiles, unless `--all` or `--almost-all` is passed.
+
+Thanks to @eihqnh for the fix.
+
+## [0.5.3] - 2025-12-26
+
+### Fixed
+
+- `lla --fuzzy` editor integration now properly handles empty editor config strings, allowing the fallback chain to work correctly when the config editor field is empty.
+
+Thanks to @chenrui333 for the pr #148
+
+## [0.5.2] - 2025-12-25
+
+### Added
+
+- `lla --fuzzy`:
+
+  - Vim/Emacs-style navigation shortcuts: `Ctrl+J/K`, `Ctrl+N/P`, `Ctrl+U/D` (half-page), `Ctrl+G` (jump to end), `Ctrl+Shift+G` (jump to start).
+  - Search bar editing shortcuts: `Ctrl+W` (delete word backward), `Ctrl+H` (delete character), `Ctrl+A` (start of line), `Home`/`End`.
+  - Inline rename: `F2` to rename the selected file, `Enter` to confirm, `Esc`/`Ctrl+C` to cancel.
+  - External editor integration: `Ctrl+E` opens the selected (or multi-selected) file(s) in your editor.
+    - Editor precedence: `listers.fuzzy.editor` (config) → `$EDITOR` → `$VISUAL` → fallback.
+
+- **Homebrew Plugin** (`brew`): manage Homebrew packages from lla (list/search/info/install/uninstall/upgrade/cleanup/doctor) with an interactive menu.
+- **Hacker News Plugin** (`hackernews`): browse Top/Best/New/Ask/Show/Jobs, open articles/comments, copy URLs, and use an interactive browser with caching.
+- **Remove Paywall Plugin** (`remove_paywall`): generate paywall-bypass links (12ft/archive.is/RemovePaywall/Freedium/Google Cache), with clipboard support, history, and preferences.
+- **Speed Test Plugin** (`speed_test`): test latency + download speed, keep history, and offer an interactive menu.
+
+### Changed
+
+- `lla plugin <name>` now works without an explicit action: in TTY it prefers a plugin `menu` action when available, otherwise falls back to `help` (non-interactive defaults to `help`).
+- Startup error handling now prints a clean, categorized error block and exits with a non-zero status instead of panicking on some parse failures.
+- Plugin errors now provide more guidance:
+  - Missing plugin names now include a list of available plugins (or a hint to run `lla install`).
+  - Unknown plugin actions try to include the plugin’s available actions list (when discoverable).
+
+### Fixed
+
+- `lla diff` now reports missing required arguments with a clear usage/help message (instead of panicking).
+- `speed_test` latency checks now use reliable HTTPS endpoints, downloads respect `test_size_mb`, and responses are streamed to avoid buffering large payloads in memory.
+- `remove_paywall` now properly URL-encodes `archive.is` (and Google Cache) links when embedding an original URL into query parameters.
+
+## [0.5.1] - 2025-11-16
+
+### Added
+
+- **Interactive Init Wizard** (`lla init`, use `--default` to skip) that walks through icon, theme, default view, and Git-focused setup choices before writing a tailored config.
+- **Per-directory profiles** via `.lla.toml`. lla now searches upward from the current working directory and overlays the nearest profile on top of the global config for safe, opt-in repo defaults.
+- **Config introspection commands**:
+  - `lla config show-effective` prints the merged configuration (global + profile) so you can see what actually applies in the current directory.
+  - `lla config diff --default` highlights every overridden key, the default value, the effective value, and whether the change came from the global config or the profile file.
+- **Theme preview** (`lla theme preview <name>`) renders a sample directory listing plus a ripgrep-style match preview so you can compare color palettes without swapping themes.
+- **Range filter syntax** for size/modified/created metadata (`--size`, `--modified`, `--created`) with human-friendly comparisons like `>10M`, `2024-01-01..`.
+- **Named filter presets** via `[filter.presets.<name>]` blocks in the config, reusable through `--preset`.
+- **Result refinement** (`--refine`) that reuses cached listings so you can iteratively filter without re-scanning the filesystem.
+- **Search pipelines** (`--search-pipe plugin:action[:arg...]`) to feed ripgrep matches directly into plugins such as `file_tagger:list-tags` or `file_organizer:organize:type`.
+- **Diff command** (`lla diff`) can now compare directories _and_ individual files (local↔local or against git references), showing per-entry size deltas for directories plus size/line summaries and unified diffs for files.
+- **Column customization for long/table views** via `[formatters.long].columns` and `[formatters.table].columns`, including plugin-provided fields through `field:<name>` entries.
+- **Optional .gitignore filtering** for every listing format via `--respect-gitignore`, `--no-gitignore`, and a new `filter.respect_gitignore` config key (fuzzy view included).
+- **CLI upgrade command** (`lla upgrade`) that reuses the install script pipeline to download the latest release (or a specified tag), verify `SHA256SUMS`, render progress indicators, and atomically replace the local binary.
+
+### Changed
+
+- `lla init` now uses a multi-section guided flow with themed step banners, expanded prompts (sort order, directory inclusion, depth limits, sorting/filtering toggles, long-view columns, plugin directory + recursion guards), and a richer summary. Run `lla init --default` to write the stock config without launching the wizard.
+- `lla config` now renders a structured, colorized summary instead of dumping the raw struct, making it easy to review key defaults (view/sort/filter, formatter tweaks, plugin status, limits) at a glance.
+- Plugin installation/update workflows now show animated banners plus per-plugin progress bars/spinners, along with success/error callouts so you can follow downloads, builds, and updates in real time.
+- Git-backed diffs now treat the reference as the baseline so additions/removals are reported from the working tree's perspective, and file diffs validate references, detect binary content, and emit clearer error messages.
+- Installation script (`install.sh`) now features polished visual styling matching the CLI upgrade command, with animated spinners, structured sections, consistent color theming, and improved error handling.
+
+### Fixed
+
+- `lla --fuzzy` no longer captures plain `y`/`o` keystrokes while you type; the copy and open shortcuts now require `Ctrl+Y`/`Ctrl+O`, so search queries can include those characters without triggering actions. ([#142](https://github.com/chaqchase/lla/issues/142))
+
+### Docs
+
+- Documented the wizard, `.lla.toml` profiles, new config commands, and theme preview usage in the README.
+- Added README coverage for range filters, presets, cache-based refinement, and search→plugin pipelines.
+- Documented the diff command’s directory and file workflows (including git examples) plus column customization examples in the README.
+
+## [0.5.0] - 2025-01-24
+
+### Added
+
+- **Interactive Shortcut Builder** (`lla shortcut create`):
+
+  - Guided workflow to create shortcuts with plugin and action selection
+  - Auto-discovery of available plugin actions with descriptions
+  - Real-time validation of shortcut names (prevents duplicates and conflicts)
+  - Auto-fills descriptions from plugin metadata
+  - Beautiful UI with themed prompts using dialoguer
+
+- **Plugin Action Discovery API**:
+
+  - New `GetAvailableActions` protocol message for querying plugin capabilities
+  - Plugins can expose action metadata (name, usage, description, examples)
+  - `ActionRegistry::list_actions()` method for automatic action enumeration
+  - `PluginManager::get_plugin_actions()` for centralized action queries
+  - Full protobuf integration in `lla_plugin_interface` and `lla_plugin_utils`
+
+- **Shortcut Import/Export System**:
+
+  - `lla shortcut export [file]` - Export shortcuts and aliases to TOML file or stdout
+  - `lla shortcut import <file>` - Import shortcuts from file (replaces existing)
+  - `lla shortcut import <file> --merge` - Merge imported shortcuts (skips conflicts)
+  - Enables sharing shortcut collections across machines or with teams
+  - Export includes both shortcuts and plugin aliases in portable TOML format
+
+- **Plugin Aliases System**:
+
+  - Define short aliases for frequently used plugins in config
+  - Configure via `[plugin_aliases]` section in `config.toml`
+  - Automatic alias resolution in all plugin commands and shortcuts
+  - Example: `j = "jwt"` allows `lla plugin j decode` instead of `lla plugin jwt decode`
+
+- **Positional Plugin Command Syntax**:
+
+  - New simplified syntax: `lla plugin <name> <action> [args...]`
+  - Backward compatible with existing `--name`/`--action` flag syntax
+  - Significantly reduces typing for frequent plugin invocations
+  - Works seamlessly with plugin aliases
+
+- **Kill Process Plugin** (`kill_process`):
+
+  - Interactive process management inspired by Raycast's Kill Process command
+  - **Live fuzzy search** - Real-time filtering that updates as you type
+  - Full-screen terminal UI with instant process filtering
+  - Arrow key navigation through filtered results
+  - List all running processes with PID, name, CPU usage, and memory
+  - Interactive multi-select interface for killing processes
+  - Smart ranking by fuzzy match score for better search results
+  - Handles 1000+ processes efficiently with instant search
+  - Force kill support (SIGKILL on Unix, /F on Windows)
+  - Kill by name pattern or specific PID
+  - Cross-platform support (macOS, Linux, Windows)
+  - Confirmation dialogs before terminating processes
+  - Platform-specific error messages and help text
+
+- **Google Search Plugin** (`google_search`):
+
+  - Web search directly from the command line
+  - Interactive autosuggestions powered by Google
+  - Search history management (save, view, clear)
+  - Clipboard integration - fallback to clipboard content when no query provided
+  - Favorite searches management
+  - Opens results in default browser
+
+- **JWT Plugin** (`jwt`):
+
+  - Decode and analyze JWT tokens
+  - Display header, payload, and signature information
+  - Token validation and expiration checking
+  - Search through saved tokens
+  - Token history management
+  - Copy decoded content to clipboard
+  - Beautiful formatted JSON output
+
+- **YouTube Plugin** (`youtube`):
+
+  - Search YouTube videos from the command line
+  - Interactive autosuggestions
+  - View video details (title, channel, views, duration)
+  - Search history management
+  - Open videos in default browser
+  - Trending videos support
+
+- **Google Meet Plugin** (`google_meet`):
+
+  - Create instant Google Meet rooms
+  - Generate and manage meeting links
+  - Quick meeting creation workflow
+  - Copy meeting links to clipboard
+  - Open meetings directly in browser
+  - Meeting history tracking
+
+- **NPM Plugin** (`npm`):
+  - Search NPM packages from the command line
+  - Integration with Bundlephobia for package size info
+  - View package details (version, downloads, size)
+  - Bundle size analysis (minified and gzipped)
+  - Favorites management for frequently used packages
+  - Open package pages in browser
+  - Search history support
+
+### Changed
+
+- Plugin interface protocol extended with action discovery messages
+- `ProtobufHandler` trait updated to encode/decode action metadata
+- Config structure now includes `plugin_aliases: HashMap<String, String>`
+- Command parsing supports both positional and flag-based plugin invocations
+- Plugin commands now resolve aliases before execution
+
+### Improved
+
+- Enhanced `lla shortcut list` output with better formatting
+- Shortcut validation now checks plugin existence and action availability
+- Interactive UIs consistently use `LlaDialoguerTheme` for unified appearance
+
+### Developer Experience
+
+- Plugins using `ActionRegistry` automatically support action discovery
+- `ProtobufHandler::decode_request()` handles `GetAvailableActions` requests
+- `ProtobufHandler::encode_response()` serializes `AvailableActions` responses
+- Clear separation between plugin protocol and CLI argument handling
+
+### Examples
+
+**Before 0.5.0:**
+
+```bash
+# Long command syntax
+lla plugin --name jwt --action decode --args token123
+
+# Manual shortcut creation
+lla shortcut add decode-jwt jwt decode --description "Decode JWT tokens"
+```
+
+**After 0.5.0:**
+
+```bash
+# Interactive creation
+lla shortcut create
+# → Select plugin: jwt
+# → Select action: decode
+# → Enter name: decode-jwt
+# ✓ Created!
+
+# Short invocation
+lla decode-jwt token123
+
+# Positional syntax
+lla plugin jwt decode token123
+
+# With plugin alias (configure j = "jwt" in config)
+lla plugin j decode token123
+
+# Share shortcuts
+lla shortcut export team-shortcuts.toml
+lla shortcut import team-shortcuts.toml --merge
+```
+
+## [0.4.2]
+
+### Added
+
+- Git view now shows richer per-file context including commit subject lines, upstream tracking, and working tree summaries.
+- Prebuilt plugin installer that downloads the latest release archive (`lla install --prebuilt`).
+
+### Changed
+
+- Git formatter adapts column widths to the current terminal size, truncating long subjects and hiding plugin columns when necessary to avoid wrapping.
+- `lla install` now defaults to downloading prebuilt plugins; use `--git` for source builds when needed.
+- Plugin installation flow features themed progress spinners and richer status messaging for a cleaner, modern experience.
+
+### Docs
+
+- Documented the new prebuilt plugin installation flow and updated default instructions.
+
+## [0.4.1] - 2025-09-16
+
+### Added
+
+- Jump-to-directory feature with bookmarks and history (`lla jump`):
+
+  - Interactive directory jumper with keyboard-driven prompt using arrow keys/Enter
+  - **One-command setup**: `lla jump --setup` automatically configures shell integration
+  - Auto-detects shell (bash, zsh, fish) and adds `j` function for seamless directory changing
+  - Add directories to bookmarks with `lla jump --add <PATH>`
+  - Remove bookmarks with `lla jump --remove <PATH>`
+  - List all bookmarks and recent history with `lla jump --list`
+  - Clear directory history with `lla jump --clear-history`
+  - Automatic history recording on directory visits (respects `exclude_paths`)
+  - History limited to 500 entries, deduplication prevents repeats
+  - Bookmarks are prioritized in the interactive prompt
+  - Integration with existing `exclude_paths` configuration
+  - Prevents duplicate shell function installation
+
+- Ripgrep-backed content search via `--search` flag:
+- Fuzzy finder enhancements (`--fuzzy`):
+
+  - Multi-select via Space with visual markers (●)
+  - Batch actions:
+    - `Enter`: confirm selection (single or multi)
+    - `y`: copy selected path(s) to clipboard (pbcopy/xclip/xsel/clip)
+    - `o`: open selected path(s) with system opener (open/xdg-open/start)
+  - Status bar now shows key hints for selection and actions
+
+  - Search file contents for patterns using `lla --search "TODO"`
+  - Uses literal string matching by default (safe for special characters like `main()`)
+  - Supports regex patterns with `regex:` prefix (e.g., `--search "regex:^func.*\("`)
+  - Honors existing filters, exclude paths, and dotfile settings
+  - Shows context lines with configurable `--search-context` (default: 2)
+  - Works with machine output modes (`--json`, `--ndjson`, `--csv`)
+  - Supports case-sensitive/insensitive matching
+  - Integrates with directory-only/files-only filtering
+
+### Fixed
+
+- Add tilde-aware `exclude_paths` configuration and honor it across listings
+- Reuse one loaded config instead of re-loading, small performance improvement
+- Ensure recursive lister skips excluded directories via `filter_entry`
+- Hide excluded directories from top-level listings as well
+
+### Docs
+
+- Document `exclude_paths` in README and add CHANGELOG entry
+- Document new `--search` and `--search-context` flags in command reference
+
+## [0.4.0] - 2025-01-10
+
+### Added
+
+- Stable machine-readable outputs with streaming:
+  - `--json`: Outputs a single JSON array (streamed). Supports `--pretty` for human-friendly indentation.
+  - `--ndjson`: Newline-delimited JSON, one object per line.
+  - `--csv`: CSV with a header row. Proper escaping and UTF-8 handling via the `csv` crate.
+  - Flags are mutually exclusive; `--pretty` only affects `--json`.
+- Stable schema across machine modes with these fields (always present; nulls where appropriate):
+  - `path`, `name`, `extension`, `file_type`, `size_bytes`, `modified`, `created`, `accessed`, `mode_octal`, `owner_user`, `owner_group`, `inode`, `hard_links`, `symlink_target`, `is_hidden`, `git_status`, and `plugin` container for plugin enrichments.
+- Streaming output writers to avoid unbounded memory growth on large listings.
+- Optional Git status integration into machine outputs when `-G` is used (no extra git work otherwise).
+- Archive introspection (no extraction to disk):
+  - Automatic detection for `.zip`, `.tar`, `.tar.gz`, `.tgz` when a single archive file is passed as the path
+  - Lists archive contents as a virtual directory and integrates with existing views: default, long, table, grid, tree, recursive
+  - Works with filters, sorting, depth control, and machine outputs (`--json`, `--ndjson`, `--csv`)
+  - Symlink targets in tar archives are exposed as `custom_fields["symlink_target"]`
+- Single-file listing:
+  - Passing a regular file path now lists that single file (instead of erroring with Not a directory)
+  - All formatters and machine outputs apply normally
+- Long format quality-of-life flags:
+  - `--hide-group`: Hide the group column (great for single-user systems). Also configurable via `formatters.long.hide_group` in the config file.
+  - `--relative-dates`: Show relative modified times (e.g., "2h ago"). Also configurable via `formatters.long.relative_dates`.
+  - Relative dates are powered by `chrono-humanize` for accurate human-friendly phrasing.
+
+### Changed
+
+- CLI: Added mutually exclusive flags group for machine output (`--json`, `--ndjson`, `--csv`) and `--pretty`.
+- Internal: Introduced `OutputMode` in CLI args to route to human vs machine formatters.
+- Internal: Added a serializable adapter to normalize timestamps to ISO-8601 UTC and permissions to octal.
+- Docs: Updated README with a new "Machine Output" section including schema and examples.
+- Long format date column alignment is now consistent even when using relative dates.
+- Grid formatter no longer appends an extra trailing blank newline; output ends without an extra empty line.
+
+### Fixed
+
+- Non-fatal metadata read failures are handled gracefully during machine output; entries still emit with nulls where needed and a warning on stderr, without corrupting stdout.
+- Graceful handling when the provided path is a single file or an archive: no erroneous directory reads
+- Relative date phrasing now correctly uses "X ago" for past times and "in X" for future times.
+
+## [0.3.11] - 2025-01-09
+
+### Added
+
+- New command-line arguments for controlling file visibility:
+  - `--all`: Show all files including hidden files and special entries (. and ..)
+  - `--almost-all`: Show hidden files but exclude special directory entries (. and ..)
+
+### Changed
+
+- Upgraded actions/upload-artifact to v4 in CI and release workflows
+- Improved directory sorting logic across all sorters (alphabetical, date, size)
+- Enhanced natural sorting algorithm for more accurate numeric segment comparisons
+- Updated last_git_commit plugin to use JSON for parsing commit information
+
+### Fixed
+
+- Fixed issue with SizeMap formatter panicking in certain scenarios
+- Improved symlink handling to gracefully manage invalid symlinks
+- Enhanced symlink target information display and metadata collection
+- Fixed commit info retrieval in the git plugin for edge cases
+
+## [0.3.10] - 2025-01-06
+
+### Added
+
+- Enhanced symlink support:
+
+  - New symlink metadata retrieval and display
+  - Improved symlink target information in output
+  - Better visual representation of symlinks
+
+- New permission format options:
+
+  - `--permission-format` argument with multiple display formats:
+    - symbolic (default)
+    - octal
+    - binary
+    - verbose
+    - compact
+  - Configurable default permission format in settings in configuration file
+
+- Enhanced grid format configuration:
+  - New `--grid-ignore` option
+  - Configurable grid width settings in configuration file
+
+### Changed
+
+- Improved plugin configuration with enhanced tilde expansion for plugin directories
+
+- Refined symlink target display positioning in LongFormatter output
+- Enhanced documentation and README formatting
+- Added completions archive to release workflow
+
+### Fixed
+
+- Fixed symlink handling to respect 'no_symlinks' argument
+
+## [0.3.9] - 2025-01-04
+
+### Added
+
+- New file management plugins:
+
+  - `file_copier`: Clipboard-based file copying functionality
+  - `file_mover`: Clipboard-based file moving operations
+  - `file_remover`: Interactive file and directory removal
+  - `file_organizer`: File organization with multiple strategies (extension, date, type, size)
+
+- Enhanced theme system:
+
+  - New `LlaDialoguerTheme` for consistent UI styling
+  - Additional customization options for symbols and padding
+  - New theme management commands: `theme pull` and `theme install`
+  - Improved theme integration across all plugins
+
+- Improved search capabilities:
+  - Enhanced fuzzy matching functionality
+  - Optimized `SearchIndex` for better search operations
+
+### Documentation
+
+- A new documentation website is available at [lla.chaqchase.com](https://lla.chaqchase.com)
+
+### Changed
+
+- Standardized capitalization of 'lla' across documentation
+- Enhanced release workflow with package generation
+- Improved plugin documentation and installation instructions
+- Integrated `lla_plugin_utils` across plugins for better consistency
+
+### Fixed
+
+- Coloring issue for icons in the tree format
+
+## [0.3.8] - 2024-12-21
+
+### Added
+
+- New utility library `lla_plugin_utils` for building plugins:
+
+  - UI components (BoxComponent, HelpFormatter, KeyValue, etc.)
+  - Plugin infrastructure utilities
+  - Code highlighting and syntax support
+  - Configuration management tools
+
+- New command-line arguments for file type filtering:
+
+  - `--dirs-only`: Show only directories
+  - `--files-only`: Show only regular files
+  - `--symlinks-only`: Show only symbolic links
+  - `--dotfiles-only`: Show only dot files and directories
+  - `--no-dirs`: Hide directories
+  - `--no-files`: Hide regular files
+  - `--no-symlinks`: Hide symbolic links
+  - `--no-dotfiles`: Hide dot files and directories
+
+- Enhanced plugin functionality:
+  - All official plugins updated with new UI components and improved functionality
+  - Users can update their plugins using `lla update` command
+  - Individual plugin updates supported via `lla update <plugin_name>`
+
+### Changed
+
+- Updated configuration with new `no_dotfiles` setting to hide dot files by default
+- Enhanced documentation with detailed examples of file type filtering
+- Updated `terminal_size` dependency to version 0.4.1
+
+### Fixed
+
+- Fix the issue with the default listing format from config overrides the args
+
+## [0.3.7] - 2024-12-20
+
+### Changed
+
+- Faster recursive directory listing with optimized traversal
+- Improved fuzzy search performance and accuracy
+- Enhanced tree format with more efficient rendering
+- Redesigned size calculation logic for faster and more accurate results
+- General stability improvements and bug fixes
+
+## [0.3.6] - 2024-12-18
+
+### Added
+
+- Interactive fuzzy file search (Experimental - Might be unstable)
+
+  - Enabled via the new `--fuzzy` flag
+  - Designed for quick file lookups in standard-sized directories
+  - Future updates will optimize performance for large-scale directory structures
+
+- Directory size integration
+
+  - New option to include directory sizes in all listing formats
+  - Compatible with default, sizemap, grid, and tree visualizations
+  - Recursive directory size calculation with `calculate_dir_size`
+  - Configurable through the `include_dirs` setting in configuration files
+  - Enhanced size bar visualization for both directories and files
+
+- Enhanced shell integration
+
+  - Added comprehensive shell completion support for bash, zsh, fish, and elvish
+  - Generate completions using `lla completion <shell> [path]`
+
+- Customizable fuzzy search configuration
+
+  - New `listers.fuzzy.ignore_patterns` setting
+  - Supports multiple pattern types:
+    - Simple substring matching
+    - Glob patterns
+    - Regular expressions
+
+- Interactive theme management
+
+  - New `lla theme` command for interactive theme switching
+
+- Advanced directory visualization
+
+  - New `--recursive` flag for hierarchical directory display
+  - Implemented `RecursiveFormatter` for structured output
+  - Flexible tree and recursive format options
+
+### Changed
+
+- Architecture improvements
+
+  - Redesigned `Args` struct to accommodate shell completion, fuzzy format, and directory size features
+  - Enhanced command handler for improved shell integration
+  - Optimized file listing and formatting logic
+
+- Dependency updates
+
+  - Added `clap_complete` for shell completion functionality
+  - Updated `hermit-abi` version specifications
+  - Integrated `num_cpus` for improved performance
+
+- Search functionality enhancements
+
+  - Implemented configurable `FuzzyConfig` structure
+  - Enhanced `FuzzyLister` and `SearchIndex` components
+  - Improved pattern matching and file filtering capabilities
+
+- Core system refinements
+  - Optimized `create_lister` function
+  - Enhanced configuration loading for fuzzy search and directory size inclusion
+  - Improved recursive listing implementation
+  - Updated `SizeMapFormatter` for better directory and file size visualization
+
+## [0.3.5] - 2024-12-16
+
+### Added
+
+- A theming system to customize the look of `lla`
+- New configuration option `theme`
+- An extensive theming preset library
+- Add the `--no-color` flag to disable color output, and works will all listing formats
+- New package managers support
+- Include window builds in the releases
+
+### Fixed
+
+- Minor fixes and improvements
+- Stability improvements
+
+## [0.3.4] - 2024-12-14
+
+### Added
+
+- The ability to set plugins path with `config --set`
+
+## [0.3.3] - 2024-12-14
+
+### Added
+
+- New configuration options like `sort`, `filter`, `icons`
+
+### Changed
+
+- Better error handling
+- Better and much cleaner plugins installation process
+- Revised config settings
+- Refactor the main entry point
+- Enhanced plugin update mechanism
+
+### Fixed
+
+- Fixed the layout and style of the plugin installation process
+- Fixed plugins loading
+
+## [0.3.2] - 2024-12-14
+
+### Added
+
+- New configuration options like `sort`, `filter`, `icons`
+
+### Changed
+
+- Better error handling
+- Better and much cleaner plugins installation process
+- Revised config settings
+- Refactor the main entry point
+- Enhanced plugin update mechanism
+
+### Fixed
+
+- Fixed the layout and style of the plugin installation process
+
+## [0.3.1] - 2024-12-12
+
+### Added
+
+- Plugin system redesign:
+  - Protocol Buffers message passing architecture
+  - C API compatibility
+  - ABI version verification
+  - Improved documentation
+  - Enhanced plugin management interface
+  - Plugin cleanup command (`lla clean`)
+  - Improved plugin discovery and loading
+  - Plugin update functionality improved
+  - Improved the functionality and look of all plugins
+- Command shortcuts system:
+  - Store and manage plugin commands as shortcuts
+  - CLI commands for shortcut management (`lla shortcut add/remove/list`)
+  - Configuration file storage with descriptions
+  - Support for custom arguments
+  - Simplified command syntax
+- Sorting improvements:
+  - Reverse sorting (`-r`, `--sort-reverse`)
+  - Directory-first option (`--sort-dirs-first`)
+  - Case-sensitive sorting (`--sort-case-sensitive`)
+  - Natural number sorting (`--sort-natural`)
+- Filter system updates:
+  - Multiple pattern support with comma separation
+  - AND operations using `+` prefix
+  - Logical operations (AND, OR, NOT, XOR)
+  - Glob pattern matching
+  - Case sensitivity options
+- Additional features:
+  - Icon support across formats
+  - Updated `sizemap`, `timeline` and `git` views
+  - Selective plugin installation
+  - Command shortcut system
+
+### Changed
+
+- Performance optimizations for sorting
+- Improved filter matching
+- Plugin system reliability updates
+- Refined sizemap visualization
+- Updated plugin interfaces
+- Interface improvements
+- General stability enhancements
+
+### Fixed
+
+- Pregenerate protobuf bindings
+- Plugin ABI compatibility
+- Case-sensitive search behavior
+- Directory sorting issues
+- Numeric filename sorting
+
+## [0.3.0] - 2024-12-11
+
+### Added
+
+- Plugin system redesign:
+  - Protocol Buffers message passing architecture
+  - C API compatibility
+  - ABI version verification
+  - Improved documentation
+  - Enhanced plugin management interface
+  - Plugin cleanup command (`lla clean`)
+  - Improved plugin discovery and loading
+  - Plugin update functionality improved
+  - Improved the functionality and look of all plugins
+- Command shortcuts system:
+  - Store and manage plugin commands as shortcuts
+  - CLI commands for shortcut management (`lla shortcut add/remove/list`)
+  - Configuration file storage with descriptions
+  - Support for custom arguments
+  - Simplified command syntax
+- Sorting improvements:
+  - Reverse sorting (`-r`, `--sort-reverse`)
+  - Directory-first option (`--sort-dirs-first`)
+  - Case-sensitive sorting (`--sort-case-sensitive`)
+  - Natural number sorting (`--sort-natural`)
+- Filter system updates:
+  - Multiple pattern support with comma separation
+  - AND operations using `+` prefix
+  - Logical operations (AND, OR, NOT, XOR)
+  - Glob pattern matching
+  - Case sensitivity options
+- Additional features:
+  - Icon support across formats
+  - Updated `sizemap`, `timeline` and `git` views
+  - Selective plugin installation
+  - Command shortcut system
+
+### Changed
+
+- Performance optimizations for sorting
+- Improved filter matching
+- Plugin system reliability updates
+- Refined sizemap visualization
+- Updated plugin interfaces
+- Interface improvements
+- General stability enhancements
+
+### Fixed
+
+- Plugin ABI compatibility
+- Case-sensitive search behavior
+- Directory sorting issues
+- Numeric filename sorting
+
+## [0.2.10] - 2024-11-30
+
+### Added
+
+- New display formats for enhanced visualization:
+  - `git`: Display Git status information for files
+  - `grid`: Present files in an organized grid layout
+  - `sizemap`: Visualize file sizes with proportional representation
+  - `table`: Show files in a structured table format
+  - `timeline`: Group files by creation/modification dates
+- Interactive plugin management system
+- Plugin update functionality via CLI
+- Extended configuration options for customization
+- Plugin support for default and long format customization
+
+### Changed
+
+- Significant performance improvements:
+  - Optimized tree view rendering
+  - More efficient recursive file listing
+  - Better memory management for large directories
+- Plugin system improvements:
+  - Refined plugin interface for better integration
+  - More robust plugin installation process
+  - Enhanced plugin discovery and loading
+- Sorting functionality:
+  - More accurate file sorting across all formats
+  - Improved performance for large directory sorting
+
+### Fixed
+
+- Memory leaks in recursive directory listing
+- Plugin installation reliability issues
+- Color output consistency across different formats
+
+## [0.2.9] - 2024-11-27
+
+### Changed
+
+- Plugin interface versioning
+
+### Fixed
+
+- Plugin interface versioning
+- GitHub Actions workflows
+
+## [0.2.8] - 2024-01-09
+
+### Added
+
+- Multi-architecture support for all major platforms
+- Cargo workspace setup for better dependency management
+- GitHub Actions workflows for automated releases
+- SHA256 checksums for all binary artifacts
+
+### Changed
+
+- Migrated to Cargo workspace structure
+- Updated build system to use workspace inheritance
+- Improved cross-compilation support
+
+### Fixed
+
+- Build consistency across different platforms
+- Plugin interface versioning

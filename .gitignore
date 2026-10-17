@@ -1,0 +1,17 @@
+AGENTS.md
+CLAUDE.md
+.docs/
+.fac/
+
+# build artifacts
+/lean-ls
+liszt
+lz
+*.o
+*.d
+config.h
+config.mk
+build/
+bench/results/
+tests/.work/
+liszt-*.tar.gz

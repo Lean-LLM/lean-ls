@@ -1,0 +1,365 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "**/*.proto"
+      - "**/*.sh"
+      - "**/*.ps1"
+      - "plugins/*/plugin.toml"
+      - "scripts/**"
+      - ".github/workflows/ci.yml"
+      - "nfpm.yaml"
+      - "rust-toolchain.toml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "**/*.proto"
+      - "**/*.sh"
+      - "**/*.ps1"
+      - "plugins/*/plugin.toml"
+      - "scripts/**"
+      - ".github/workflows/ci.yml"
+      - "nfpm.yaml"
+      - "rust-toolchain.toml"
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_ZIGBUILD_VERSION: "0.23.0"
+  GLIBC_BASELINE: "2.28"
+  ZIG_VERSION: "0.15.2"
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest, windows-11-arm]
+        rust: [stable]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
+          targets: wasm32-wasip2
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: |
+          cargo clippy -p lla --all-targets -- -D warnings
+          cargo clippy -p lla --no-default-features --all-targets -- -D warnings
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: |
+          cargo test --workspace
+          cargo test -p lla --features wasm-plugins
+
+      - name: Test Unix installer
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./scripts/test_install_sh.sh
+
+      - name: Compile SDK fixtures
+        run: |
+          cargo check --manifest-path sdk/tests/fixtures/minimal_native/Cargo.toml
+          cargo check --manifest-path sdk/tests/fixtures/custom_batch/Cargo.toml
+          cargo check --manifest-path sdk/tests/fixtures/wasm_component/Cargo.toml
+          cargo build --manifest-path sdk/tests/fixtures/wasm_component/Cargo.toml --target wasm32-wasip2
+
+  netbsd:
+    name: NetBSD Default Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start NetBSD VM
+        uses: vmactions/netbsd-vm@v1
+        with:
+          release: "10.1"
+          sync: rsync
+          usesh: true
+          custom-shell-name: netbsd-sh
+
+      - name: Install Rust
+        shell: netbsd-sh {0}
+        run: |
+          pkg_add curl
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+
+      - name: Build default release without Wasmtime
+        shell: netbsd-sh {0}
+        run: |
+          . "$HOME/.cargo/env"
+          cargo build --release -p lla
+          if cargo tree -p lla -i wasmtime >/dev/null 2>&1; then
+            echo "Default NetBSD dependency graph unexpectedly includes Wasmtime" 1>&2
+            exit 1
+          fi
+          ./target/release/lla --help >/dev/null
+          cp target/release/lla lla-netbsd-amd64
+
+      - name: Upload NetBSD binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: lla-netbsd-amd64
+          path: lla-netbsd-amd64
+
+  build:
+    name: Build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Linux builds
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: lla-linux-amd64
+            libc: gnu
+            pkg_formats: "deb,rpm,apk,pacman"
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: lla-linux-arm64
+            libc: gnu
+            pkg_formats: "deb,rpm,apk,pacman"
+          - os: ubuntu-latest
+            target: i686-unknown-linux-gnu
+            artifact_name: lla-linux-i686
+            libc: gnu
+            pkg_formats: "deb,rpm,apk,pacman"
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact_name: lla-linux-amd64-musl
+            libc: musl
+            pkg_formats: "apk"
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            artifact_name: lla-linux-arm64-musl
+            libc: musl
+            pkg_formats: "apk"
+
+          # macOS builds
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: lla-macos-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: lla-macos-arm64
+
+          # Windows builds
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: lla-windows-amd64.exe
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            artifact_name: lla-windows-arm64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          targets: ${{ matrix.target }}
+
+      - name: Ensure stable toolchain and target installed
+        run: |
+          rustup override set stable
+          rustup show active-toolchain
+          rustup target add ${{ matrix.target }} --toolchain stable
+          rustup target list --installed
+
+      - name: Install pinned Zig build tools
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zig"
+          "$RUNNER_TEMP/zig/bin/pip" install "ziglang==$ZIG_VERSION"
+          echo "$RUNNER_TEMP/zig/bin" >> "$GITHUB_PATH"
+          cargo install cargo-zigbuild --version "$CARGO_ZIGBUILD_VERSION" --locked
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release (Unix)
+        if: runner.os != 'Windows'
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          if [[ "${{ matrix.libc }}" == "musl" ]]; then
+            cargo zigbuild --release --target "${{ matrix.target }}" -p lla --features wasm-plugins
+          elif [[ "${{ runner.os }}" == "Linux" ]]; then
+            cargo zigbuild --release --target "${{ matrix.target }}.${GLIBC_BASELINE}" -p lla --features wasm-plugins
+          else
+            cargo build --release --target "${{ matrix.target }}" -p lla --features wasm-plugins
+          fi
+
+      - name: Build release (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RUSTUP_TOOLCHAIN: stable
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --target "${{ matrix.target }}" -p lla --features wasm-plugins
+
+      - name: Verify glibc baseline
+        if: matrix.libc == 'gnu'
+        run: |
+          mapfile -t artifacts < <(find "target/${{ matrix.target }}/release" -maxdepth 1 -type f \( -name lla -o -name '*.so' \) | sort)
+          .github/scripts/check_glibc_baseline.sh "$GLIBC_BASELINE" "${artifacts[@]}"
+
+      - name: Verify Plugin Platform v3
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          ./scripts/build_plugins.sh --target "${{ matrix.target }}" --glibc-version "$GLIBC_BASELINE"
+          ./scripts/verify_plugins_v3.sh dist/plugins-linux-amd64
+
+      - name: Verify static musl linkage
+        if: matrix.libc == 'musl'
+        run: |
+          binary="target/${{ matrix.target }}/release/lla"
+          file "$binary" | grep -q "statically linked"
+          if readelf -W -l "$binary" | grep -q 'INTERP'; then
+            echo "Static musl binary unexpectedly contains an ELF interpreter" 1>&2
+            exit 1
+          fi
+          if readelf -W -d "$binary" 2>/dev/null | grep -q 'NEEDED'; then
+            echo "Static musl binary unexpectedly contains dynamic dependencies" 1>&2
+            exit 1
+          fi
+
+      - name: Prepare binary (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cp target/${{ matrix.target }}/release/lla ${{ matrix.artifact_name }}
+
+      - name: Prepare and smoke-test binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $binary = "target/${{ matrix.target }}/release/lla.exe"
+          Copy-Item $binary "${{ matrix.artifact_name }}"
+          & $binary --help | Out-Null
+          & $binary --version | Out-Null
+          $license = (& $binary --license) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to print the embedded license' }
+          if ($license -ne ((Get-Content -LiteralPath LICENSE) -join "`n")) {
+            throw 'Embedded license does not match LICENSE'
+          }
+          foreach ($shell in @('bash', 'fish', 'zsh', 'powershell', 'elvish')) {
+            $completion = (& $binary completion $shell) -join "`n"
+            if ($LASTEXITCODE -ne 0 -or $completion -notmatch 'lla') {
+              throw "Failed to generate $shell completions"
+            }
+          }
+          $fixture = Join-Path $env:RUNNER_TEMP "lla-windows-smoke"
+          New-Item -ItemType Directory -Force $fixture | Out-Null
+          $fixtureFile = Join-Path $fixture "fixture.txt"
+          [System.IO.File]::WriteAllBytes($fixtureFile, [byte[]](97, 98, 99))
+          if (-not (Test-Path -LiteralPath $fixtureFile -PathType Leaf)) {
+            throw "Windows smoke fixture was not created: $fixtureFile"
+          }
+          if ((Get-Item -LiteralPath $fixtureFile).Length -ne 3) {
+            throw "Windows smoke fixture has an unexpected size"
+          }
+          $rawJson = (& $binary --json $fixture) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw "Windows JSON smoke test failed: $rawJson" }
+          $json = $rawJson | ConvertFrom-Json
+          if (@($json).Count -ne 1) { throw "Windows JSON smoke test returned an unexpected entry count: $rawJson" }
+          $entry = @($json)[0]
+          foreach ($field in @('owner_user', 'owner_group', 'inode', 'hard_links', 'allocated_size_bytes', 'security_context', 'mount_point', 'mount_source', 'filesystem')) {
+            if ($null -ne $entry.$field) { throw "Windows JSON field '$field' must be null" }
+          }
+          $imports = (& llvm-readobj --coff-imports $binary) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to inspect Windows PE imports' }
+          if ($imports -match '(?i)(VCRUNTIME|MSVCP)[0-9_]*\.dll') {
+            throw "Windows binary imports the redistributable MSVC runtime"
+          }
+
+      - name: Build and verify Windows plugin archive
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          ./scripts/build_plugins.sh --target "${{ matrix.target }}"
+          ./scripts/verify_plugins_v3.sh "dist/plugins-windows-${{ matrix.target == 'x86_64-pc-windows-msvc' && 'amd64' || 'arm64' }}"
+
+      - name: Verify Windows plugin PE imports
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $pluginDirectory = "dist/plugins-windows-${{ matrix.target == 'x86_64-pc-windows-msvc' && 'amd64' || 'arm64' }}"
+          Get-ChildItem $pluginDirectory -Recurse -Filter *.dll | ForEach-Object {
+            $imports = (& llvm-readobj --coff-imports $_.FullName) -join "`n"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to inspect PE imports for '$($_.FullName)'" }
+            if ($imports -match '(?i)(VCRUNTIME|MSVCP)[0-9_]*\.dll') {
+              throw "Plugin '$($_.Name)' imports the redistributable MSVC runtime"
+            }
+          }
+
+      - name: Test PowerShell installer helpers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test_install_ps1.ps1 -Binary "target/${{ matrix.target }}/release/lla.exe"
+
+      - name: Test installer with Windows PowerShell 5.1
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: powershell
+        run: ./scripts/test_install_ps1.ps1 -Binary "target/${{ matrix.target }}/release/lla.exe"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}
+
+  musl_smoke:
+    name: Musl Smoke (${{ matrix.arch }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            artifact_name: lla-linux-amd64-musl
+          - arch: arm64
+            platform: linux/arm64
+            artifact_name: lla-linux-arm64-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - name: Download musl artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: musl-artifact
+
+      - name: Run Alpine smoke tests
+        run: |
+          chmod +x "musl-artifact/${{ matrix.artifact_name }}"
+          docker run --rm --platform "${{ matrix.platform }}" \
+            -v "$PWD:/work" -w /work alpine:3.23 \
+            sh -c 'apk add --no-cache bash ripgrep >/dev/null && .github/scripts/smoke_test_musl.sh "musl-artifact/${{ matrix.artifact_name }}"'

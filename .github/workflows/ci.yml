@@ -1,0 +1,25 @@
+name: Build and verify
+on:
+  push:
+  pull_request:
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./configure && make -j2
+      - run: python3 tests/lean-ls-integration.py
+      - run: python3 tests/configure-probe-regression.py
+      - run: sh tests/unit/run.sh
+      - run: bash -n install.sh uninstall.sh
+      - name: Isolated installer symlink and rollback matrix
+        run: sudo python3 tests/install-isolated.py
+      - run: FUZZ_TRIALS=10 sh tests/fuzz/run-tree.sh
+      - name: Real Ubuntu diversion install and rollback
+        run: |
+          original_link="$(readlink /usr/bin/ls || true)"
+          sudo ./install.sh
+          /usr/bin/ls --version
+          sudo ./uninstall.sh
+          test "$(readlink /usr/bin/ls || true)" = "$original_link"
+          /usr/bin/ls --version
