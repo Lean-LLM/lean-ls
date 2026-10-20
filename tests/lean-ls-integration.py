@@ -66,9 +66,12 @@ with tempfile.TemporaryDirectory(prefix='lean-ls-test-') as scratch:
     # honoring LEAN_LS_LLA or LEAN_LS_GNU_LS environment switches.
     ls_entry = p / 'ls'
     ls_entry.symlink_to(BINARY)
+    version = run([str(ls_entry), '--version'], env)
+    expect(version.returncode == 0 and version.stdout.startswith(b'lean-ls '),
+           'ls entrypoint reports lean-ls version')
     poisoned = {**env, 'LEAN_LS_LLA': '/missing/lla',
                 'LEAN_LS_GNU_LS': '/missing/gnu'}
-    for flags in ((), ('-l',), ('-lR',), ('--version',),
+    for flags in ((), ('-l',), ('-lR',),
                   ('--help',), ('--definitely-invalid',),
                   ('--color=always',), ('--hyperlink=always',),
                   ('--quoting-style=shell-escape',)):

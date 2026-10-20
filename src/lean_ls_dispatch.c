@@ -139,6 +139,12 @@ was_invoked_as_ls(const char *arg0)
     return false;
 }
 
+static void
+print_lean_version(void)
+{
+    puts("lean-ls 0.2.4 (GNU ls default, liszt fast mode, optional lla)");
+}
+
 int
 lean_ls_dispatch(int argc, char **argv)
 {
@@ -148,6 +154,12 @@ lean_ls_dispatch(int argc, char **argv)
     if (strcmp(base, "liszt") == 0 || strcmp(base, "lz") == 0)
         return 0;
     if (was_invoked_as_ls(argv[0])) {
+        for (int i = 1; i < argc && strcmp(argv[i], "--") != 0; ++i) {
+            if (strcmp(argv[i], "--version") == 0) {
+                print_lean_version();
+                return 0;
+            }
+        }
         const char *program = gnu_ls(true);
         if (is_self(program)) {
             fputs("lean-ls: original GNU ls missing; restore using uninstall.sh\n", stderr);
@@ -196,7 +208,7 @@ lean_ls_dispatch(int argc, char **argv)
         return 2;
     }
     if (show_version) {
-        puts("lean-ls 0.2.4 (GNU ls default, liszt fast mode, optional lla)");
+        print_lean_version();
         exit(0);
     }
     if (show_help) {
